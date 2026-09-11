@@ -20,7 +20,7 @@ jobs:
           - os: macos-latest        # Apple Silicon (arm64)
             asset: dm7-external-meter-macos-arm64
             built: dist/dm7-external-meter
-          - os: macos-13            # Intel (x86_64)
+          - os: macos-15-intel      # Intel (x86_64); macos-13 runners were retired
             asset: dm7-external-meter-macos-x64
             built: dist/dm7-external-meter
     runs-on: ${{ matrix.os }}
