@@ -1,0 +1,8 @@
+.claude/
+.playwright-mcp/
+__pycache__/
+*.pyc
+bridge/config.json
+.venv/
+build/
+dist/

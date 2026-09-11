@@ -1,0 +1,4 @@
+fastapi>=0.115
+uvicorn>=0.34
+websockets>=13
+psutil>=5.9   # optional: exact subnet masks for discovery (without it /24 is assumed)

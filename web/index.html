@@ -1,0 +1,682 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DM7 External Meter</title>
+<style>
+:root {
+  --bg: #0b0d10; --panel: #15181d; --line: #2a2f37; --fg: #e8ebef; --dim: #8a93a0;
+  --green: #35d05a; --yellow: #f2c230; --red: #ff3b3b; --accent: #3aa0ff;
+  --bar-h: 1vh;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+  font-family: system-ui, "Segoe UI", Roboto, "Noto Sans JP", sans-serif; overflow: hidden; touch-action: manipulation; }
+#app { display: flex; flex-direction: column; height: 100dvh; }
+#top { display: flex; align-items: center; gap: 1.2vh; padding: 0.6vh 1.2vh; height: 7vh; min-height: 24px;
+  background: var(--panel); border-bottom: 1px solid var(--line); font-size: 3.2vh; }
+#top .dot { width: 2.4vh; height: 2.4vh; border-radius: 50%; background: var(--red); }
+#top .dot.on { background: var(--green); }
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner, #top .dot.busy { box-sizing: border-box; background: transparent; border: 0.4vh solid rgba(138,147,160,.35); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.9s linear infinite; }
+.spinner { display: inline-block; width: 2.4vh; height: 2.4vh; vertical-align: -0.4vh; margin-right: 0.8vh; }
+#top .dev { color: var(--dim); font-size: 2.6vh; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+button { font: inherit; color: var(--fg); background: #1f242b; border: 1px solid var(--line); border-radius: 0.8vh;
+  padding: 0.4vh 1.6vh; font-size: 2.8vh; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.danger { background: #4a1c1c; border-color: #7a2a2a; }
+#slots { flex: 1; min-height: 0; display: flex; gap: 0.6vh; padding: 0.8vh; overflow-x: auto; overflow-y: hidden; align-items: stretch; }
+.slot { position: relative; display: flex; flex-direction: column; flex: 1 1 0; min-width: 6vh; max-width: 40vh;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 1vh; overflow: hidden; }
+.slot .head { padding: 0.5vh 0.4vh 0.3vh; text-align: center; border-top: 0.8vh solid var(--stripe, #555); }
+.slot .name { font-size: 2.9vh; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slot .sub { font-size: 2.1vh; color: var(--dim); white-space: nowrap; }
+.pick-chip { display: inline-block; padding: 0 0.7vh; border-radius: 0.5vh; font-weight: 600; color: #0b0d10; background: var(--pick, #888); }
+.seg button.pick { border-bottom: 0.5vh solid var(--pick, transparent); }
+.seg button.pick.on { background: var(--pick); border-color: var(--pick); color: #0b0d10; }
+.slot canvas { flex: 1 1 0; width: 100%; height: 0; min-height: 0; min-width: 0; display: block; }  /* height from flex only: the bitmap size (clientHeight*dpr) must never feed back into layout */
+.slot .head, .slot .vals { flex: 0 0 auto; }
+.slot .vals { display: flex; flex-direction: column; align-items: center; padding: 0.3vh 0 0.5vh; font-variant-numeric: tabular-nums; line-height: 1.1; }
+.slot .now { font-size: 3.2vh; font-weight: 600; color: var(--fg); }
+.slot .pk { font-size: 2.2vh; color: var(--dim); }
+.slot .vals .tap { display: flex; flex-direction: column; align-items: center; width: 92%; padding: 0.2vh 0 0.3vh; border-radius: 0.6vh; cursor: pointer; transition: background .25s; }
+.slot .vals .tap.flash { background: #2a3f55; transition: none; }
+.slot .pk::before { content: 'PK '; font-size: 1.7vh; letter-spacing: 0.05em; }
+.slot .pk.off { visibility: hidden; }
+.slot .hot { color: var(--yellow); }
+.slot .over { color: var(--red); font-weight: 700; }
+.slot .hold { margin: 0.5vh auto 0; padding: 0.35vh 0.6vh; font-size: 2vh; font-weight: 600; line-height: 1.4; border-radius: 0.6vh;
+  width: 86%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slot .hold.off { background: #3b3f45; border-color: #2c3036; color: #9aa1aa; }
+.slot .hold.on { background: #8ec8f0; border-color: #6fb3e3; color: #0f1a24; }
+#top .lbl { font-size: 2.3vh; color: var(--dim); white-space: nowrap; }
+#top .seg { display: flex; }
+.seg button { border-radius: 0; white-space: nowrap; }
+/* DM7 Editor-style speech-bubble popover */
+#top .pop-anchor { position: relative; }
+.popover { position: absolute; top: calc(100% + 1.8vh); right: 0; z-index: 20; min-width: 20vh;
+  background: #3b3e43; color: #e6e9ec; border: 0.35vh solid #ffffff; border-radius: 1.2vh; padding: 1.4vh 1.6vh 1.6vh;
+  box-shadow: 0 1vh 3vh rgba(0,0,0,.6); display: none; flex-direction: column; align-items: stretch; gap: 1vh; }
+.popover.open { display: flex; }
+/* speech-bubble tail: white outline (::before) with grey fill (::after) */
+.popover::before, .popover::after { content: ''; position: absolute; right: 3vh; border: 1.6vh solid transparent; border-top: 0; }
+.popover::before { top: calc(-1.6vh - 0.35vh); border-bottom-color: #ffffff; }
+.popover::after  { top: calc(-1.6vh + 0.15vh); border-bottom-color: #3b3e43; }
+.popover h3 { margin: 0 0 0.4vh; text-align: center; font-size: 2.6vh; font-weight: 700; color: #e6e9ec; }
+.popover button { background: #5b5f65; border: 1px solid #6a6f76; color: #d6dade; font-weight: 600; font-size: 2.6vh; padding: 1.1vh 1.2vh; border-radius: 0.8vh; }
+.popover button:active { background: #1e8fd1; border-color: #1e8fd1; color: #fff; }
+.popover .field { display: flex; flex-direction: column; align-items: center; gap: 0.6vh; }
+.popover .field label { font-size: 2.1vh; color: #c3c8ce; }
+.popover .stepper { display: flex; align-items: stretch; gap: 0.6vh; }
+.popover .stepper button { min-width: 5.2vh; padding: 0.6vh 0; font-size: 3vh; line-height: 1; }
+.popover .stepper input { width: 9vh; text-align: center; font: inherit; font-size: 2.8vh; font-weight: 600; color: #e6e9ec;
+  background: #23262b; border: 1px solid #6a6f76; border-radius: 0.8vh; padding: 0.4vh 0.2vh; -moz-appearance: textfield; }
+.popover .stepper input::-webkit-outer-spin-button, .popover .stepper input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.popover .stepper .unit { align-self: center; font-size: 2.2vh; color: #c3c8ce; }
+.popover hr { width: 100%; border: 0; border-top: 1px solid #7a7f86; margin: 0.4vh 0; }
+#btn-peak { background: #3b3f45; border-color: #2c3036; color: #b8bec6; font-weight: 600; }
+#btn-peak.open { background: #8ec8f0; border-color: #6fb3e3; color: #0f1a24; }
+.slot.add { align-items: center; justify-content: center; color: var(--dim); font-size: 6vh; border-style: dashed; flex: 0 0 8vh; }
+#empty[hidden] { display: none; }
+#empty { position: absolute; inset: 7vh 0 0; display: flex; align-items: center; justify-content: center; color: var(--dim); font-size: 3.5vh; pointer-events: none; }
+/* ---- offline ---- */
+body.offline .slot canvas { opacity: .45; }
+body.offline .slot::after { content: 'OFFLINE'; position: absolute; left: 0; right: 0; top: 42%; text-align: center; pointer-events: none;
+  font-size: min(4vh, 22px); font-weight: 700; letter-spacing: .12em; color: #ff6b6b; text-shadow: 0 0 1vh #000; }
+body.offline.editing .slot::after { display: none; }
+#top .dev.offline { color: #ff6b6b; }
+/* ---- edit mode: reorder / assign by drag ---- */
+#btn-edit.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+body.editing #slots { overflow: hidden; }               /* edge auto-scroll handles overflow while dragging */
+body.editing .slot { touch-action: none; cursor: grab; }
+body.editing .slot canvas, body.editing .slot .vals { display: none; }   /* compact card while editing */
+.slot .edit-tools { display: none; }
+body.editing .slot .edit-tools { display: flex; flex: 1 1 0; min-height: 0; flex-direction: column; align-items: center; justify-content: center; gap: 1vh; padding-bottom: 1vh; }
+.slot .grip { flex: 1; display: flex; align-items: center; color: var(--accent); font-size: min(9vh, 40px); line-height: 1; pointer-events: none; opacity: .9; }
+.slot .del { flex: 0 0 auto; width: 86%; max-width: 12vh; padding: 0.5vh 0; border-radius: 0.8vh; line-height: 1;
+  background: #4a1c1c; border: 1px solid #7a2a2a; color: #f2b8b8; font-size: 2.6vh; touch-action: none; }
+.slot.dragging { opacity: .3; }
+.slot.drop-replace { box-shadow: inset 0 0 0 0.5vh var(--accent); background: #17263a; }
+#drawer { display: none; flex-direction: column; flex: 0 0 52vh; min-height: 0; border-top: 1px solid var(--line); background: var(--panel); padding: 0.8vh 1vh; gap: 0.6vh; }
+body.editing #drawer { display: flex; }
+#drawer.drop-remove { box-shadow: inset 0 0 0 0.5vh var(--red); }
+#drawer .tabs { display: flex; gap: 0.8vh; align-items: center; flex: 0 0 auto; }
+#drawer .hint { color: var(--dim); font-size: 2.2vh; flex: 1; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#tiles { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(13vh, 1fr)); gap: 0.5vh; align-content: start; padding: 0.3vh; }
+#tiles button { display: flex; flex-direction: column; align-items: flex-start; padding: 0.5vh 0.7vh; border-left: 0.8vh solid var(--stripe, #555);
+  text-align: left; touch-action: pan-y; cursor: grab; }
+#tiles button .n { font-size: 2vh; color: var(--dim); }
+#tiles button .l { font-size: 2.6vh; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+#ghost { position: fixed; left: 0; top: 0; display: none; z-index: 50; pointer-events: none; padding: 0.7vh 1.4vh; border-radius: 0.8vh;
+  background: #1f242b; border: 1px solid var(--accent); border-left: 0.9vh solid var(--stripe, #555); font-size: 3vh; font-weight: 600;
+  box-shadow: 0 1vh 3vh rgba(0,0,0,.65); white-space: nowrap; }
+#ghost small { display: block; font-size: 2vh; font-weight: 400; color: var(--dim); }
+#insert-mark { position: fixed; display: none; width: 0.6vh; border-radius: 0.3vh; background: var(--accent); z-index: 40; pointer-events: none; }
+/* device picker (auto-discovery) */
+#devpick { position: fixed; inset: 0; background: rgba(0,0,0,.8); display: none; align-items: center; justify-content: center; z-index: 30; }
+#devpick.open { display: flex; }
+#devpick .box { background: var(--panel); border: 1px solid var(--line); border-radius: 1.5vh; width: min(94vw, 120vh); max-height: 92vh;
+  display: flex; flex-direction: column; padding: 1.4vh 1.6vh; gap: 1vh; }
+#devpick h2 { margin: 0; font-size: 3.4vh; }
+#devpick .note { color: var(--dim); font-size: 2.4vh; }
+#devlist { display: flex; flex-direction: column; gap: 0.8vh; overflow-y: auto; }
+#devlist button { display: flex; align-items: baseline; gap: 1.6vh; text-align: left; padding: 1.2vh 1.6vh; font-size: 3vh; }
+#devlist button .ip { font-family: ui-monospace, Consolas, monospace; color: var(--dim); font-size: 2.6vh; }
+#devlist button .prod { color: var(--dim); font-size: 2.4vh; }
+#devlist button.on { border-color: var(--accent); box-shadow: inset 0 0 0 0.25vh var(--accent); }
+#devlist button:focus, #grid button:focus { outline: none; }
+#devlist { padding: 0.3vh; }
+#top .dev { cursor: pointer; }
+/* picker */
+#picker { position: fixed; inset: 0; background: rgba(0,0,0,.75); display: none; align-items: center; justify-content: center; }
+#picker.open { display: flex; }
+#picker .box { background: var(--panel); border: 1px solid var(--line); border-radius: 1.5vh; width: min(96vw, 220vh); height: 92vh;
+  display: flex; flex-direction: column; padding: 1.2vh; gap: 1vh; }
+#picker .row { display: flex; gap: 0.8vh; align-items: center; flex-wrap: nowrap; }
+#picker .row .grow { flex: 1; }
+.seg button:first-child { border-radius: 0.8vh 0 0 0.8vh; } .seg button:last-child { border-radius: 0 0.8vh 0.8vh 0; }
+.seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+#grid { flex: 1; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(14vh, 1fr)); gap: 0.6vh; align-content: start; }
+#grid button { display: flex; flex-direction: column; align-items: flex-start; padding: 0.6vh 0.8vh; border-left: 0.8vh solid var(--stripe, #555); text-align: left; }
+#grid button .n { font-size: 2.2vh; color: var(--dim); }
+#grid button .l { font-size: 2.8vh; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+#grid button.on { border-color: var(--accent); box-shadow: inset 0 0 0 0.25vh var(--accent); }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="top">
+    <div class="dot" id="dot"></div>
+    <div class="dev" id="dev">connecting…</div>
+    <div class="pop-anchor">
+      <button id="btn-peak">Peak Hold</button>
+      <div class="popover" id="pop-peak">
+        <h3>Peak Hold</h3>
+        <button id="btn-hold-all-on">All ON</button>
+        <button id="btn-hold-all-off">All OFF</button>
+        <hr>
+        <div class="field">
+          <label for="hold-sec">Hold Time</label>
+          <div class="stepper">
+            <button id="hold-dec">−</button>
+            <input id="hold-sec" type="number" inputmode="decimal" min="0" max="60" step="0.1">
+            <span class="unit">s</span>
+            <button id="hold-inc">＋</button>
+          </div>
+        </div>
+        <hr>
+        <button id="btn-reset">Reset Peak</button>
+      </div>
+    </div>
+    <button id="btn-edit">編集</button>
+    <button id="btn-full">全画面</button>
+  </div>
+  <div id="slots"></div>
+  <div id="drawer">
+    <div class="tabs">
+      <div class="seg" id="seg-dsrc"></div>
+      <div class="seg" id="seg-dpick"></div>
+      <span class="hint">タイルをメーターへドラッグ: 上に落とすと差し替え、隙間に落とすと挿入。メーターは ≡ をドラッグで並び替え、ここへ落とすか × で削除</span>
+    </div>
+    <div id="tiles"></div>
+  </div>
+  <div id="empty" hidden>「編集」からメーターを追加してください</div>
+</div>
+
+<div id="ghost"></div>
+<div id="insert-mark"></div>
+
+<div id="devpick">
+  <div class="box">
+    <div class="row" style="display:flex;align-items:center;gap:1vh">
+      <h2 style="flex:1">DM7 を選択</h2>
+      <button id="btn-rescan">再スキャン</button>
+      <button id="btn-devclose">閉じる</button>
+    </div>
+    <div class="note" id="devnote"></div>
+    <div id="devlist"></div>
+  </div>
+</div>
+
+<div id="picker">
+  <div class="box">
+    <div class="row">
+      <div class="seg" id="seg-src"></div>
+      <div class="seg" id="seg-pick"></div>
+      <div class="grow"></div>
+      <button id="btn-remove" class="danger">このメーターを外す</button>
+      <button id="btn-close">閉じる</button>
+    </div>
+    <div id="grid"></div>
+  </div>
+</div>
+
+<script>
+'use strict';
+// ---------- constants ----------
+// Visual scale copied from the DM7 Editor meter (tick labels top→bottom). Piecewise-linear between ticks.
+const TICKS = [0, -3, -6, -9, -12, -15, -18, -24, -30, -40, -50, -60];
+const OVER_RAW = 255;         // levelwt 0xff = OVER (calibration table)
+const PEAK_DECAY_DB_PER_S = 20;
+const HOLD_SEC_MIN = 0, HOLD_SEC_MAX = 60, HOLD_SEC_DEFAULT = 3;   // peak hold time, seconds (0.1 s resolution)
+let holdSec = loadHoldSec();
+function loadHoldSec() { try { const v = parseFloat(localStorage.getItem('dm7meter.holdSec')); if (isFinite(v)) return clampHold(v); } catch {} return HOLD_SEC_DEFAULT; }
+function clampHold(v) { return Math.min(HOLD_SEC_MAX, Math.max(HOLD_SEC_MIN, Math.round(v * 10) / 10)); }
+function setHoldSec(v) { if (!isFinite(v)) v = holdSec; holdSec = clampHold(v); try { localStorage.setItem('dm7meter.holdSec', String(holdSec)); } catch {} renderHoldSec(); }
+function renderHoldSec() { const i = document.getElementById('hold-sec'); if (i && document.activeElement !== i) i.value = Number.isInteger(holdSec) ? String(holdSec) : holdSec.toFixed(1); }
+const YELLOW_FROM = -18, RED_FROM = 0;   // ASSUMPTION: segment colours; DM7 colour thresholds not verified
+const COLOR_MAP = { Blue:'#3a7bff', Orange:'#ff8a2a', Yellow:'#f2c230', Purple:'#b25cff', Cyan:'#2fd3e6',
+  Magenta:'#ff4fb0', Red:'#ff3b3b', Green:'#35d05a', Off:'#555', White:'#ddd', Pink:'#ff7fc1', SkyBlue:'#6fc3ff' };
+const SRC_LABEL = { InCh:'IN', Mix:'MIX', Mtrx:'MTRX', St:'ST' };
+const PICK_COLOR = { PreHPF:'#4fc3f7', PreEQ:'#4fc3f7', PreFader:'#f2c230', PostOn:'#35d05a' };   // metering-point colour code
+
+// ---------- state ----------
+let table = null, sources = {}, meta = null, ws = null;
+let bridge = { connected: false, host: null, fixed: false, scanning: false, devices: [], device: {} };
+let offline = { since: null, kind: null, longShown: false };   // kind: 'console' (bridge up, DM7 down) | 'bridge' (WebSocket down)
+function setOffline(kind, forSec) {
+  const was = offline.kind;
+  if (kind) {
+    if (!was) { frames = {}; }                                  // drop stale levels -> meters fall to the floor, peaks stay
+    if (!was || was !== kind) offline.since = performance.now() - (forSec || 0) * 1000;
+    offline.kind = kind;
+  } else { offline.kind = null; offline.since = null; offline.longShown = false; }
+  document.body.classList.toggle('offline', !!kind);
+  document.getElementById('dev').classList.toggle('offline', !!kind);
+  renderOfflineText();
+}
+function renderOfflineText() {
+  if (!offline.kind) return;
+  const s = Math.max(0, Math.floor((performance.now() - offline.since) / 1000));
+  const el = document.getElementById('dev');
+  if (offline.kind === 'bridge') el.textContent = `ブリッジに接続できません (${s} 秒)`;
+  else el.textContent = bridge.scanning ? `切断 ${s} 秒 · DM7 を検索中…` : `切断 ${s} 秒 · ${bridge.host || 'DM7'} へ再接続中…`;
+}
+setInterval(renderOfflineText, 1000);
+let slots = loadSlots();           // [{src, ch, pick, hold}]  hold: per-channel peak hold (default true)
+function holdEnabled(slot) { return slot.hold !== false; }   // per-channel setting; 全ON/全OFF just rewrite every channel
+function setAllHold(on) { slots.forEach(s => { s.hold = on; }); saveSlots(); renderSlots(false); }
+let frames = {};                   // addr -> Uint8Array
+const views = new Map();           // slot element -> view state
+let pickerTarget = null;           // index of slot being edited, or -1 for new
+let pSrc = 'InCh', pPick = 'PostOn';
+
+function loadSlots() {
+  // ?slots=InCh:17:PostOn,St:1:PostOn:0  (1-based channel; optional 4th field 0 = peak hold off) presets and persists the layout
+  const q = new URLSearchParams(location.search).get('slots');
+  if (q) { const s = q.split(',').map(x => x.split(':')).filter(a => a.length >= 3)
+      .map(([src, ch, pick, hold]) => ({ src, ch: Math.max(0, parseInt(ch, 10) - 1), pick, hold: hold !== '0' }));
+    if (s.length) { try { localStorage.setItem('dm7meter.slots', JSON.stringify(s)); } catch {} return s; } }
+  try { const s = JSON.parse(localStorage.getItem('dm7meter.slots')); if (Array.isArray(s) && s.length) return s; } catch {}
+  return [ {src:'St',ch:0,pick:'PostOn'}, {src:'St',ch:1,pick:'PostOn'},
+           ...Array.from({length:8}, (_, i) => ({src:'InCh', ch:i, pick:'PostOn'})) ];
+}
+function saveSlots() { try { localStorage.setItem('dm7meter.slots', JSON.stringify(slots)); } catch {} }
+
+// ---------- dB mapping ----------
+function rawToDb(raw) { return table ? table[String(raw)] : -145; }
+function dbToPos(db) {       // 0 (bottom) .. 1 (top of 0 dB tick)
+  if (db <= TICKS[TICKS.length - 1]) return 0;
+  if (db >= 0) return 1;
+  const n = TICKS.length - 1;
+  for (let i = 0; i < n; i++) {
+    const hi = TICKS[i], lo = TICKS[i + 1];
+    if (db <= hi && db >= lo) return 1 - (i + (hi - db) / (hi - lo)) / n;
+  }
+  return 0;
+}
+
+// ---------- websocket ----------
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = () => sendSubs();
+  ws.onclose = () => { setOffline('bridge'); setTimeout(connect, 1500); };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.type === 'hello') { sources = m.sources; applyStatus(m); if (editing) buildDrawer(); }
+    else if (m.type === 'status') applyStatus(m);
+    else if (m.type === 'meta') { meta = m.meta; renderSlots(false); refreshPickerLabels(); refreshDrawerLabels(); }
+    else if (m.type === 'mtr') frames[m.addr] = m.v;
+  };
+}
+function sendSubs() {
+  if (!ws || ws.readyState !== 1) return;
+  const addrs = [...new Set(slots.map(s => `${s.src}/${s.pick}`))];
+  ws.send(JSON.stringify({ type: 'subscribe', addrs }));
+}
+function applyStatus(m) {
+  bridge = { connected: !!m.connected, host: m.host || null, fixed: !!m.fixed, scanning: !!m.scanning, devices: m.devices || [], device: m.device || {},
+             bind_ip: m.bind_ip || null, bind_ip_present: m.bind_ip_present, last_error: m.last_error || null };
+  const busy = !bridge.connected && (bridge.scanning || !!bridge.host);   // scanning, or connecting to a chosen host
+  if (bridge.connected) { setOffline(null); setStatus(true, bridge.device); }
+  else if (bridge.host) setOffline('console', m.offline_for);           // a target exists but is unreachable
+  else { setOffline(null); setStatus(false, bridge.scanning ? 'DM7 を検索中…' : bridge.devices.length ? 'DM7 を選んでください' : 'DM7 が見つかりません'); }
+  document.getElementById('dot').classList.toggle('busy', busy);
+  if (m.offline_long && !offline.longShown && !bridge.fixed) { offline.longShown = true; openDevPick(true); }   // 30 s+ offline: offer the list once
+  renderDevices();
+  // no target yet and more than one console found -> ask; nothing found -> show the dialog with a rescan button
+  if (!bridge.fixed && !bridge.host && !bridge.scanning) openDevPick(true);
+  else if (bridge.connected && devAutoOpened) openDevPick(false);
+}
+let devAutoOpened = false;
+function openDevPick(open, auto = true) {
+  document.getElementById('devpick').classList.toggle('open', open);
+  devAutoOpened = open && auto;
+}
+function renderDevices() {
+  const list = document.getElementById('devlist'); list.innerHTML = '';
+  const note = document.getElementById('devnote');
+  note.innerHTML = '';
+  if (bridge.scanning || (!bridge.connected && bridge.host)) note.appendChild(Object.assign(document.createElement('span'), { className: 'spinner' }));
+  note.appendChild(document.createTextNode(
+    bridge.scanning ? '検索中…'
+    : (bridge.bind_ip && bridge.bind_ip_present === false) ? `指定した NIC (${bridge.bind_ip}) がこの PC に見つかりません。LAN ケーブル / IP 設定を確認してください`
+    : (!bridge.connected && bridge.host && offline.kind === 'console' && offline.since && performance.now() - offline.since > 30000) ? `${bridge.host} への接続がタイムアウトしました。`
+    : (!bridge.connected && bridge.host) ? `${bridge.host} に接続しています…`
+    : bridge.fixed ? `起動引数で ${bridge.host} に固定されています (切替不可)`
+    : bridge.devices.length ? `${bridge.devices.length} 台見つかりました。接続先をタップしてください`
+    : '同じネットワークに DM7 が見つかりません。LAN 接続を確認して再スキャンしてください'));
+  document.getElementById('btn-rescan').disabled = bridge.scanning;
+  for (const d of bridge.devices) {
+    const b = document.createElement('button');
+    b.innerHTML = `<span class="name"></span><span class="prod"></span><span class="ip"></span>`;
+    b.querySelector('.name').textContent = d.devicename || '(no name)';
+    b.querySelector('.prod').textContent = d.productname || '';
+    b.querySelector('.ip').textContent = d.ip;
+    if (d.ip === bridge.host) b.classList.add('on');
+    b.disabled = bridge.fixed;
+    b.onclick = () => { ws?.send(JSON.stringify({ type: 'select', host: d.ip })); openDevPick(false); };
+    list.appendChild(b);
+  }
+}
+document.getElementById('btn-rescan').onclick = () => ws?.send(JSON.stringify({ type: 'scan' }));
+document.getElementById('btn-devclose').onclick = () => openDevPick(false);
+document.getElementById('dev').onclick = () => { openDevPick(true, false); if (!bridge.fixed && !bridge.scanning) ws?.send(JSON.stringify({ type: 'scan' })); };  // always refresh the list when opened by hand
+function setStatus(on, dev) {
+  document.getElementById('dot').classList.toggle('on', !!on);
+  const el = document.getElementById('dev');
+  if (dev && typeof dev === 'object') el.textContent = `${dev.productname || 'DM7'} ${dev.devicename || ''}`.trim();
+  else if (typeof dev === 'string') el.textContent = dev;
+  if (!on && !dev) el.textContent = 'DM7 未接続';
+}
+
+// ---------- slot rendering ----------
+function labelOf(src, ch) {
+  const name = meta?.[src]?.['Label/Name']?.[ch];
+  return (typeof name === 'string' && name.length) ? name : `${SRC_LABEL[src]} ${ch + 1}`;
+}
+function colorOf(src, ch) { return COLOR_MAP[meta?.[src]?.['Label/Color']?.[ch]] || '#555'; }
+
+function renderSlots(rebuild = true) {
+  const root = document.getElementById('slots');
+  document.getElementById('empty').hidden = slots.length > 0;
+  if (rebuild) { root.innerHTML = ''; views.clear(); }
+  slots.forEach((s, i) => {
+    let el = root.children[i];
+    if (!el || !views.has(el)) {
+      el = document.createElement('div'); el.className = 'slot';
+      el.innerHTML = `<div class="head"><div class="name"></div><div class="sub"></div></div><canvas></canvas>
+        <div class="vals"><div class="tap"><div class="now">–</div><div class="pk">–</div></div><button class="hold">ON</button></div>
+        <div class="edit-tools"><div class="grip">≡</div><button class="del" title="このメーターを外す">×</button></div>`;
+      el.addEventListener('click', () => { if (!editing) openPicker(i); });
+      el.querySelector('.del').addEventListener('click', (e) => { e.stopPropagation(); slots.splice(i, 1); saveSlots(); renderSlots(); sendSubs(); });
+      el.querySelector('.del').addEventListener('pointerdown', (e) => e.stopPropagation());
+      el.addEventListener('pointerdown', (e) => { if (editing && e.isPrimary) startDrag({ kind: 'slot', index: i }, e); });
+      el.querySelector('.tap').addEventListener('click', (e) => {  // tap the readouts (instant + PK) -> reset this channel's peak
+        e.stopPropagation();
+        const v = views.get(el); v.peakDb = -145; v.peakAt = performance.now(); v.over = false;
+        const tap = e.currentTarget; tap.classList.add('flash'); setTimeout(() => tap.classList.remove('flash'), 150);
+      });
+      el.querySelector('.hold').addEventListener('click', (e) => {
+        e.stopPropagation();                      // do not open the picker
+        if (editing) return;
+        const s = slots[i]; s.hold = s.hold === false; saveSlots(); renderSlots(false);
+      });
+      root.appendChild(el);
+      views.set(el, { peakDb: -145, peakAt: 0, lastDb: -145, over: false, canvas: el.querySelector('canvas') });
+    }
+    el.style.setProperty('--stripe', colorOf(s.src, s.ch));
+    el.querySelector('.name').textContent = labelOf(s.src, s.ch);
+    const sub = el.querySelector('.sub'); sub.innerHTML = ''; sub.append(`${SRC_LABEL[s.src]}${s.ch + 1} `);
+    const chip = document.createElement('span'); chip.className = 'pick-chip'; chip.textContent = s.pick; chip.style.setProperty('--pick', PICK_COLOR[s.pick] || '#888'); sub.appendChild(chip);
+    const hb = el.querySelector('.hold'), on = holdEnabled(s);
+    hb.textContent = 'Peak Hold';
+    hb.className = 'hold ' + (on ? 'on' : 'off');
+    hb.title = 'この ch のピークホールドを切替';
+  });
+}
+
+function draw(now) {
+  const root = document.getElementById('slots');
+  slots.forEach((s, i) => {
+    const el = root.children[i]; if (!el) return;
+    const v = views.get(el); const c = v.canvas;
+    const W = c.clientWidth, H = c.clientHeight;
+    if (!W || !H) return;
+    const dpr = window.devicePixelRatio || 1;
+    if (c.width !== W * dpr || c.height !== H * dpr) { c.width = W * dpr; c.height = H * dpr; }
+    const raw = frames[`${s.src}/${s.pick}`]?.[s.ch];
+    let db = raw === undefined ? -145 : rawToDb(raw);
+    const over = raw === OVER_RAW;
+    if (over) db = 0;
+    // peak hold (per channel, overridable globally)
+    const hold = holdEnabled(s);
+    if (!hold) { v.peakDb = db; v.peakAt = now; v.over = over; }
+    else if (db >= v.peakDb) { v.peakDb = db; v.peakAt = now; v.over = over; }
+    else if (now - v.peakAt > holdSec * 1000) { v.peakDb = Math.max(db, v.peakDb - PEAK_DECAY_DB_PER_S * 16 / 1000); v.over = false; }
+    const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, W, H);
+    const padL = Math.min(34, W * 0.42), top = 6, bot = 4, mh = H - top - bot;
+    const y = (pos) => top + (1 - pos) * mh;
+    // scale
+    g.font = `${Math.max(9, Math.min(13, H * 0.05))}px system-ui`; g.textAlign = 'right'; g.textBaseline = 'middle';
+    g.fillStyle = '#8a93a0'; g.strokeStyle = '#2a2f37';
+    TICKS.forEach((t, k) => { const yy = y(1 - k / (TICKS.length - 1)); if (W > 40) g.fillText(t === 0 ? '0' : String(-t), padL - 4, yy);
+      g.beginPath(); g.moveTo(padL, yy); g.lineTo(W, yy); g.stroke(); });
+    // bar
+    const x0 = padL + 2, bw = W - x0 - 3;
+    const segs = [[-145, YELLOW_FROM, '#35d05a'], [YELLOW_FROM, RED_FROM, '#f2c230']];
+    for (const [lo, hi, col] of segs) {
+      const a = Math.min(db, hi); if (a <= lo) continue;
+      g.fillStyle = col; g.fillRect(x0, y(dbToPos(a)), bw, y(dbToPos(lo)) - y(dbToPos(a)));
+    }
+    if (over) { g.fillStyle = '#ff3b3b'; g.fillRect(x0, 0, bw, top + 3); }
+    // peak line (only when hold is enabled)
+    if (hold && v.peakDb > -60) { g.fillStyle = v.over ? '#ff3b3b' : (v.peakDb >= YELLOW_FROM ? '#f2c230' : '#35d05a'); g.fillRect(x0, y(dbToPos(v.peakDb)) - 1, bw, 2); }
+    const nowEl = el.querySelector('.now'), pkEl = el.querySelector('.pk');
+    const fmt = (d, ov) => ov ? 'OVER' : (d <= -60 ? '–' : d.toFixed(1));
+    const cls = (base, d, ov) => base + (ov ? ' over' : d >= YELLOW_FROM ? ' hot' : '');
+    nowEl.textContent = fmt(db, over); nowEl.className = cls('now', db, over);
+    pkEl.textContent = fmt(v.peakDb, v.over); pkEl.className = cls('pk', v.peakDb, v.over) + (hold ? '' : ' off');
+    pkEl.parentElement.title = 'タップでこの ch のピークをリセット';
+  });
+  requestAnimationFrame(draw);
+}
+
+// ---------- edit mode ----------
+let editing = false, dSrc = 'InCh', dPick = 'PostOn';
+function setEditing(on) {
+  editing = on;
+  document.body.classList.toggle('editing', on);
+  const b = document.getElementById('btn-edit'); b.textContent = on ? '完了' : '編集'; b.classList.toggle('on', on);
+  if (on) { closePicker(); togglePop(false); buildDrawer(); }
+  renderSlots(false);
+}
+document.getElementById('btn-edit').onclick = () => setEditing(!editing);
+function buildDrawer() {
+  const segS = document.getElementById('seg-dsrc'); segS.innerHTML = '';
+  Object.keys(sources).forEach(src => { const b = document.createElement('button'); b.textContent = SRC_LABEL[src];
+    b.className = src === dSrc ? 'on' : ''; b.onclick = () => { dSrc = src; if (!sources[src].pickoffs.includes(dPick)) dPick = 'PostOn'; buildDrawer(); }; segS.appendChild(b); });
+  const segP = document.getElementById('seg-dpick'); segP.innerHTML = '';
+  (sources[dSrc]?.pickoffs || []).forEach(pk => { const b = document.createElement('button'); b.textContent = pk;
+    b.className = 'pick' + (pk === dPick ? ' on' : ''); b.style.setProperty('--pick', PICK_COLOR[pk] || '#888');
+    b.onclick = () => { dPick = pk; buildDrawer(); }; segP.appendChild(b); });
+  const tiles = document.getElementById('tiles'); tiles.innerHTML = '';
+  for (let ch = 0; ch < (sources[dSrc]?.count || 0); ch++) {
+    const b = document.createElement('button'); b.style.setProperty('--stripe', colorOf(dSrc, ch));
+    b.innerHTML = `<span class="n">${SRC_LABEL[dSrc]} ${ch + 1}</span><span class="l"></span>`;
+    b.querySelector('.l').textContent = labelOf(dSrc, ch);
+    b.addEventListener('pointerdown', (e) => { if (e.isPrimary) startDrag({ kind: 'tile', src: dSrc, ch, pick: dPick }, e); });
+    b.addEventListener('click', () => {            // tap (no drag) = append at the far right
+      if (suppressClickUntil > performance.now()) return;
+      slots.push({ src: dSrc, ch, pick: dPick, hold: true }); saveSlots(); renderSlots(); sendSubs();
+      const row = document.getElementById('slots'); requestAnimationFrame(() => { row.scrollLeft = row.scrollWidth; });
+    });
+    tiles.appendChild(b);
+  }
+}
+function refreshDrawerLabels() {
+  if (!editing) return;
+  document.querySelectorAll('#tiles button').forEach((b, ch) => { b.style.setProperty('--stripe', colorOf(dSrc, ch)); b.querySelector('.l').textContent = labelOf(dSrc, ch); });
+}
+
+// Drag engine (pointer events). item = {kind:'tile', src, ch, pick} | {kind:'slot', index}
+const DRAG_THRESHOLD = 8, EDGE_ZONE = 0.08, EDGE_SPEED = 14;
+let drag = null, suppressClickUntil = 0;   // a finished drag must not double as a tap
+const ghost = document.getElementById('ghost'), insertMark = document.getElementById('insert-mark');
+function startDrag(item, e) {
+  if (drag) return;
+  drag = { item, id: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, active: false, target: null, raf: 0 };
+  window.addEventListener('pointermove', onDragMove);
+  window.addEventListener('pointerup', onDragEnd);
+  window.addEventListener('pointercancel', onDragCancel);
+}
+function dragLabel(item) {
+  const s = item.kind === 'slot' ? slots[item.index] : item;
+  return { name: labelOf(s.src, s.ch), sub: `${SRC_LABEL[s.src]}${s.ch + 1} · ${s.pick}`, color: colorOf(s.src, s.ch) };
+}
+function onDragMove(e) {
+  if (!drag || e.pointerId !== drag.id) return;
+  drag.x = e.clientX; drag.y = e.clientY;
+  if (!drag.active) {
+    const dx = e.clientX - drag.x0, dy = e.clientY - drag.y0;
+    if (drag.item.kind === 'tile' && Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > DRAG_THRESHOLD) return onDragCancel(e); // let the tile list scroll
+    if (Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+    drag.active = true;
+    const L = dragLabel(drag.item);
+    ghost.innerHTML = `<span></span><small></small>`; ghost.firstChild.textContent = L.name; ghost.lastChild.textContent = L.sub;
+    ghost.style.setProperty('--stripe', L.color); ghost.style.display = 'block';
+    if (drag.item.kind === 'slot') document.getElementById('slots').children[drag.item.index]?.classList.add('dragging');
+    drag.raf = requestAnimationFrame(dragFrame);
+  }
+  e.preventDefault();
+}
+function dragFrame() {
+  if (!drag || !drag.active) return;
+  ghost.style.transform = `translate(${drag.x + 14}px, ${drag.y - 24}px)`;
+  const row = document.getElementById('slots'), rr = row.getBoundingClientRect();
+  const drawer = document.getElementById('drawer'), dr = drawer.getBoundingClientRect();
+  const els = [...row.children];
+  let target = null;
+  if (drag.y >= rr.top - 20 && drag.y <= rr.bottom + 20 && drag.x >= rr.left && drag.x <= rr.right) {
+    // edge auto-scroll
+    const z = rr.width * EDGE_ZONE;
+    if (drag.x < rr.left + z) row.scrollLeft -= EDGE_SPEED; else if (drag.x > rr.right - z) row.scrollLeft += EDGE_SPEED;
+    // replace (tile only) when over the middle half of a slot, otherwise nearest gap
+    let insert = els.length;
+    for (let i = 0; i < els.length; i++) {
+      const r = els[i].getBoundingClientRect();
+      if (drag.item.kind === 'tile' && drag.x >= r.left + r.width * 0.25 && drag.x <= r.right - r.width * 0.25) { target = { replace: i }; break; }
+      if (drag.x < r.left + r.width / 2) { insert = i; break; }
+    }
+    if (!target) target = { insert };
+  } else if (drag.item.kind === 'slot' && drag.y >= dr.top && drag.y <= dr.bottom) {
+    target = { remove: true };
+  }
+  // visuals
+  els.forEach(el => el.classList.remove('drop-replace'));
+  drawer.classList.toggle('drop-remove', !!target?.remove);
+  if (target?.replace !== undefined) { els[target.replace].classList.add('drop-replace'); insertMark.style.display = 'none'; }
+  else if (target?.insert !== undefined) {
+    const i = target.insert;
+    const x = i < els.length ? els[i].getBoundingClientRect().left - 4 : (els.length ? els[els.length - 1].getBoundingClientRect().right : rr.left + 8);
+    insertMark.style.display = 'block'; insertMark.style.left = `${x}px`; insertMark.style.top = `${rr.top + 6}px`; insertMark.style.height = `${rr.height - 12}px`;
+  } else insertMark.style.display = 'none';
+  drag.target = target;
+  drag.raf = requestAnimationFrame(dragFrame);
+}
+function onDragEnd(e) {
+  if (!drag || e.pointerId !== drag.id) return;
+  const { item, target, active } = drag;
+  cleanupDrag();
+  if (active) suppressClickUntil = performance.now() + 300;
+  if (!active || !target) return;
+  if (item.kind === 'tile') {
+    if (target.replace !== undefined) slots[target.replace] = { src: item.src, ch: item.ch, pick: item.pick, hold: slots[target.replace].hold };
+    else if (target.insert !== undefined) slots.splice(target.insert, 0, { src: item.src, ch: item.ch, pick: item.pick, hold: true });
+  } else {
+    const from = item.index;
+    if (target.remove) slots.splice(from, 1);
+    else if (target.insert !== undefined) {
+      let to = target.insert; if (to > from) to -= 1;
+      if (to !== from) { const [s] = slots.splice(from, 1); slots.splice(to, 0, s); }
+    }
+  }
+  saveSlots(); renderSlots(); sendSubs();
+}
+function onDragCancel(e) { if (!drag || (e && e.pointerId !== drag.id)) return; cleanupDrag(); }
+function cleanupDrag() {
+  cancelAnimationFrame(drag?.raf || 0);
+  window.removeEventListener('pointermove', onDragMove); window.removeEventListener('pointerup', onDragEnd); window.removeEventListener('pointercancel', onDragCancel);
+  ghost.style.display = 'none'; insertMark.style.display = 'none';
+  document.getElementById('drawer').classList.remove('drop-remove');
+  document.querySelectorAll('.slot').forEach(el => el.classList.remove('dragging', 'drop-replace'));
+  drag = null;
+}
+
+// ---------- picker ----------
+function openPicker(i) {
+  pickerTarget = i;
+  if (i >= 0) { pSrc = slots[i].src; pPick = slots[i].pick; }
+  document.getElementById('btn-remove').hidden = i < 0;
+  buildPicker();
+  document.getElementById('picker').classList.add('open');
+}
+function closePicker() { document.getElementById('picker').classList.remove('open'); }
+function refreshPickerLabels() {   // live update of names/colours while the picker is open (no rebuild, keeps scroll position)
+  if (!document.getElementById('picker').classList.contains('open')) return;
+  document.querySelectorAll('#grid button').forEach((b, ch) => {
+    b.style.setProperty('--stripe', colorOf(pSrc, ch));
+    b.querySelector('.l').textContent = labelOf(pSrc, ch);
+  });
+}
+function buildPicker() {
+  const segS = document.getElementById('seg-src'); segS.innerHTML = '';
+  Object.keys(sources).forEach(src => { const b = document.createElement('button'); b.textContent = SRC_LABEL[src];
+    b.className = src === pSrc ? 'on' : ''; b.onclick = () => { pSrc = src; if (!sources[src].pickoffs.includes(pPick)) pPick = 'PostOn'; buildPicker(); }; segS.appendChild(b); });
+  const segP = document.getElementById('seg-pick'); segP.innerHTML = '';
+  (sources[pSrc]?.pickoffs || []).forEach(p => { const b = document.createElement('button'); b.textContent = p;
+    b.className = 'pick' + (p === pPick ? ' on' : ''); b.style.setProperty('--pick', PICK_COLOR[p] || '#888');
+    b.onclick = () => { pPick = p;
+      const cur = pickerTarget >= 0 && slots[pickerTarget];
+      if (cur && cur.src === pSrc && cur.pick !== p) { cur.pick = p; saveSlots(); renderSlots(false); sendSubs(); }   // keep the channel, switch the point
+      buildPicker(); }; segP.appendChild(b); });
+  const grid = document.getElementById('grid'); grid.innerHTML = '';
+  const n = sources[pSrc]?.count || 0;
+  for (let ch = 0; ch < n; ch++) {
+    const b = document.createElement('button'); b.style.setProperty('--stripe', colorOf(pSrc, ch));
+    b.innerHTML = `<span class="n">${SRC_LABEL[pSrc]} ${ch + 1}</span><span class="l"></span>`;
+    b.querySelector('.l').textContent = labelOf(pSrc, ch);
+    const cur = pickerTarget >= 0 && slots[pickerTarget];
+    if (cur && cur.src === pSrc && cur.ch === ch && cur.pick === pPick) b.classList.add('on');
+    b.onclick = () => { const s = { src: pSrc, ch, pick: pPick, hold: pickerTarget >= 0 ? slots[pickerTarget].hold !== false : true };
+      if (pickerTarget >= 0) slots[pickerTarget] = s; else slots.push(s);
+      saveSlots(); renderSlots(); sendSubs(); closePicker(); };
+    grid.appendChild(b);
+  }
+}
+const pop = document.getElementById('pop-peak'), popBtn = document.getElementById('btn-peak');
+function togglePop(open = !pop.classList.contains('open')) { pop.classList.toggle('open', open); popBtn.classList.toggle('open', open); }
+popBtn.onclick = (e) => { e.stopPropagation(); togglePop(); };
+pop.addEventListener('click', (e) => e.stopPropagation());
+document.addEventListener('click', () => togglePop(false));
+document.getElementById('hold-dec').onclick = () => setHoldSec(holdSec - 1);
+document.getElementById('hold-inc').onclick = () => setHoldSec(holdSec + 1);
+{ const inp = document.getElementById('hold-sec');
+  inp.addEventListener('change', () => { setHoldSec(parseFloat(inp.value)); inp.blur(); renderHoldSec(); });
+  inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
+  inp.addEventListener('blur', renderHoldSec); }
+renderHoldSec();
+document.getElementById('btn-hold-all-on').onclick = () => { setAllHold(true); togglePop(false); };
+document.getElementById('btn-hold-all-off').onclick = () => { setAllHold(false); togglePop(false); };
+function resetPeaks() { const now = performance.now(); for (const v of views.values()) { v.peakDb = -145; v.peakAt = now; v.over = false; } }
+document.getElementById('btn-reset').onclick = () => { resetPeaks(); togglePop(false); };
+document.getElementById('btn-close').onclick = closePicker;
+document.getElementById('btn-remove').onclick = () => { if (pickerTarget >= 0) { slots.splice(pickerTarget, 1); saveSlots(); renderSlots(); sendSubs(); } closePicker(); };
+document.getElementById('btn-full').onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen?.(); };
+document.getElementById('picker').addEventListener('click', (e) => { if (e.target.id === 'picker') closePicker(); });
+
+// ---------- demo (synthetic frames, no console needed: ?demo=1) ----------
+function startDemo() {
+  const dbToRaw = (db) => { let best = 0; for (const [k, v] of Object.entries(table)) if (v <= db && +k > best && +k < 255) best = +k; return best; };
+  const t0 = performance.now();
+  setInterval(() => {
+    if (!table) return;
+    const t = (performance.now() - t0) / 1000;
+    for (const [src, d] of Object.entries(sources)) for (const p of d.pickoffs) {
+      const v = new Array(d.count).fill(3);
+      for (let i = 0; i < d.count; i++) {
+        const base = -60 + 60 * ((i * 7) % d.count) / d.count;            // spread channels over the scale
+        const wob = 6 * Math.sin(t * (1 + i * 0.13)) + 3 * Math.sin(t * 5.1 + i);
+        const db = base + wob + (p === 'PostOn' ? 0 : 3);
+        v[i] = (i % 11 === 0 && Math.sin(t * 0.7 + i) > 0.9) ? 255 : dbToRaw(Math.min(db, 2));
+      }
+      frames[`${src}/${p}`] = v;
+    }
+  }, 50);
+  sources = { InCh: {count:72, pickoffs:['PreHPF','PreFader','PostOn']}, Mix: {count:48, pickoffs:['PreEQ','PreFader','PostOn']},
+              Mtrx: {count:12, pickoffs:['PreEQ','PreFader','PostOn']}, St: {count:4, pickoffs:['PreEQ','PreFader','PostOn']} };
+  setStatus(true, 'DEMO (synthetic signal)');
+}
+
+// ---------- boot ----------
+const DEMO = new URLSearchParams(location.search).has('demo');
+fetch('/table.json').then(r => r.json()).then(t => { table = t; });
+renderSlots();
+if (DEMO) startDemo(); else connect();
+requestAnimationFrame(draw);
+</script>
+</body>
+</html>
