@@ -64,6 +64,7 @@ DM7 Editor と同時に使えます (DM7 側の設定変更は不要)。
 
 - `?slots=St:1:PostOn,InCh:17:PostOn:0,Mix:7:PreFader` : 表示するメーターを指定 (ソース:ch 番号:ポイント、4 つ目の `:0` でその ch の Peak Hold を OFF)。指定はブラウザに保存される
 - `?demo=1` : DM7 無しで合成信号を表示 (UI の確認用)
+- `?fps=30` / `?dpr=1` : 低性能機 (ラズパイ等) 向けに描画レートと描画解像度を抑える
 
 ## 画面の操作
 
@@ -88,6 +89,8 @@ python3 bridge/server.py
 Python 3.9 以上。実行ファイルは `pip install pyinstaller && pyinstaller packaging/dm7meter.spec` で作れます (`dist/` に出力)。
 
 ## ラズパイでキオスク運用する場合
+
+描画は 1 メーター 1 canvas を `requestAnimationFrame` で更新し、レイアウト読み取りを含まない (サイズは `ResizeObserver`、目盛はサイズごとにキャッシュ、値が変わらないメーターは描かない)。PC 実測で 36 本表示時のレイアウト計算は 59 回/秒、スクリプト時間は 1 コアの 12% (Chrome ヘッドレス)。Pi では `?fps=30&dpr=1` を付けると更に軽くなる。
 
 Raspberry Pi OS にソースを置き、`bridge/server.py --no-browser --listen 127.0.0.1` を systemd で常駐、Chromium を `--kiosk http://127.0.0.1:8000/?slots=...` で自動起動する構成を想定しています。ディスプレイは HDMI + USB タッチのものを選んでください。
 

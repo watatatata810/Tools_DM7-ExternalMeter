@@ -256,7 +256,7 @@ function renderOfflineText() {
 setInterval(renderOfflineText, 1000);
 let slots = loadSlots();           // [{src, ch, pick, hold}]  hold: per-channel peak hold (default true)
 function holdEnabled(slot) { return slot.hold !== false; }   // per-channel setting; 全ON/全OFF just rewrite every channel
-function setAllHold(on) { slots.forEach(s => { s.hold = on; }); saveSlots(); renderSlots(false); }
+function setAllHold(on) { slots.forEach(s => { s.hold = on; }); saveSlots(); renderSlots(false); for (const v of views.values()) v.dirty = true; }
 let frames = {};                   // addr -> Uint8Array
 const views = new Map();           // slot element -> view state
 let pickerTarget = null;           // index of slot being edited, or -1 for new
@@ -372,7 +372,7 @@ function colorOf(src, ch) { return COLOR_MAP[meta?.[src]?.['Label/Color']?.[ch]]
 function renderSlots(rebuild = true) {
   const root = document.getElementById('slots');
   document.getElementById('empty').hidden = slots.length > 0;
-  if (rebuild) { root.innerHTML = ''; views.clear(); }
+  if (rebuild) { for (const c of canvasViews.keys()) sizeObserver.unobserve(c); canvasViews.clear(); root.innerHTML = ''; views.clear(); }
   slots.forEach((s, i) => {
     let el = root.children[i];
     if (!el || !views.has(el)) {
@@ -386,16 +386,20 @@ function renderSlots(rebuild = true) {
       el.addEventListener('pointerdown', (e) => { if (editing && e.isPrimary) startDrag({ kind: 'slot', index: i }, e); });
       el.querySelector('.tap').addEventListener('click', (e) => {  // tap the readouts (instant + PK) -> reset this channel's peak
         e.stopPropagation();
-        const v = views.get(el); v.peakDb = -145; v.peakAt = performance.now(); v.over = false;
+        const v = views.get(el); v.peakDb = -145; v.peakAt = performance.now(); v.over = false; v.dirty = true;
         const tap = e.currentTarget; tap.classList.add('flash'); setTimeout(() => tap.classList.remove('flash'), 150);
       });
       el.querySelector('.hold').addEventListener('click', (e) => {
         e.stopPropagation();                      // do not open the picker
         if (editing) return;
-        const s = slots[i]; s.hold = s.hold === false; saveSlots(); renderSlots(false);
+        const s = slots[i]; s.hold = s.hold === false; saveSlots(); renderSlots(false); views.get(el).dirty = true;
       });
       root.appendChild(el);
-      views.set(el, { peakDb: -145, peakAt: 0, lastDb: -145, over: false, canvas: el.querySelector('canvas') });
+      const canvas = el.querySelector('canvas');
+      const v = { peakDb: -145, peakAt: 0, over: false, canvas, W: 0, H: 0, dirty: true,
+                  lastRaw: null, lastPeakDrawn: null, lastOver: null, lastHold: null,
+                  nowEl: el.querySelector('.now'), pkEl: el.querySelector('.pk'), nowTxt: '', nowCls: '', pkTxt: '', pkCls: '' };
+      views.set(el, v); canvasViews.set(canvas, v); sizeObserver.observe(canvas);
     }
     el.style.setProperty('--stripe', colorOf(s.src, s.ch));
     el.querySelector('.name').textContent = labelOf(s.src, s.ch);
@@ -408,49 +412,88 @@ function renderSlots(rebuild = true) {
   });
 }
 
+// ---------- rendering ----------
+// Performance rules (measured 2026-09-11: the old loop forced one layout per meter per frame):
+//  * never read layout (element sizes) inside draw(); sizes come from a ResizeObserver
+//  * the scale (ticks + labels) is rendered once per size into an offscreen canvas
+//  * a meter is redrawn only when its level / peak / state changed; DOM text only when the string changed
+const QS = new URLSearchParams(location.search);
+const DPR_CAP = parseFloat(QS.get('dpr')) || 0;          // ?dpr=1 : cap the bitmap scale (low-end kiosks)
+const FPS_CAP = parseInt(QS.get('fps'), 10) || 0;         // ?fps=30 : cap the redraw rate (0 = display refresh)
+const canvasViews = new Map();
+function effDpr() { const d = window.devicePixelRatio || 1; return DPR_CAP ? Math.min(d, DPR_CAP) : d; }
+const sizeObserver = new ResizeObserver((entries) => {
+  const dpr = effDpr();
+  for (const e of entries) {
+    const v = canvasViews.get(e.target); if (!v) continue;
+    v.W = Math.round(e.contentRect.width); v.H = Math.round(e.contentRect.height);
+    const bw = Math.round(v.W * dpr), bh = Math.round(v.H * dpr);
+    if (v.canvas.width !== bw || v.canvas.height !== bh) { v.canvas.width = bw; v.canvas.height = bh; }
+    v.dirty = true;
+  }
+});
+function geom(W, H) {
+  const padL = Math.min(34, W * 0.42), top = 6, bot = 4, mh = H - top - bot;
+  return { padL, top, mh, x0: padL + 2, bw: W - padL - 5, y: (pos) => top + (1 - pos) * mh };
+}
+const scaleCache = new Map();
+function scaleLayer(W, H, dpr) {
+  const key = `${W}x${H}@${dpr}`;
+  let c = scaleCache.get(key); if (c) return c;
+  c = document.createElement('canvas'); c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
+  const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const G = geom(W, H);
+  g.font = `${Math.max(9, Math.min(13, H * 0.05))}px system-ui`; g.textAlign = 'right'; g.textBaseline = 'middle';
+  g.fillStyle = '#8a93a0'; g.strokeStyle = '#2a2f37';
+  TICKS.forEach((tk, k) => { const yy = G.y(1 - k / (TICKS.length - 1));
+    if (W > 40) g.fillText(tk === 0 ? '0' : String(-tk), G.padL - 4, yy);
+    g.beginPath(); g.moveTo(G.padL, yy); g.lineTo(W, yy); g.stroke(); });
+  if (scaleCache.size > 48) scaleCache.delete(scaleCache.keys().next().value);
+  scaleCache.set(key, c);
+  return c;
+}
+function setText(el, v, key, txt, cls) {
+  if (v[key + 'Txt'] !== txt) {   // reuse the text node: no detached-node churn for the GC
+    if (el.firstChild && el.firstChild.nodeType === 3) el.firstChild.nodeValue = txt; else el.textContent = txt;
+    v[key + 'Txt'] = txt; }
+  if (v[key + 'Cls'] !== cls) { el.className = cls; v[key + 'Cls'] = cls; }
+}
+let lastDraw = 0;
 function draw(now) {
-  const root = document.getElementById('slots');
+  if (FPS_CAP && now - lastDraw < 1000 / FPS_CAP - 1) { requestAnimationFrame(draw); return; }
+  lastDraw = now;
+  const root = document.getElementById('slots'), dpr = effDpr();
+  const fmt = (d, ov) => ov ? 'OVER' : (d <= -60 ? '–' : d.toFixed(1));
+  const cls = (base, d, ov) => base + (ov ? ' over' : d >= YELLOW_FROM ? ' hot' : '');
   slots.forEach((s, i) => {
     const el = root.children[i]; if (!el) return;
-    const v = views.get(el); const c = v.canvas;
-    const W = c.clientWidth, H = c.clientHeight;
-    if (!W || !H) return;
-    const dpr = window.devicePixelRatio || 1;
-    if (c.width !== W * dpr || c.height !== H * dpr) { c.width = W * dpr; c.height = H * dpr; }
+    const v = views.get(el); if (!v || !v.W || !v.H) return;
     const raw = frames[`${s.src}/${s.pick}`]?.[s.ch];
     let db = raw === undefined ? -145 : rawToDb(raw);
     const over = raw === OVER_RAW;
     if (over) db = 0;
-    // peak hold (per channel, overridable globally)
+    // peak hold (per channel)
     const hold = holdEnabled(s);
     if (!hold) { v.peakDb = db; v.peakAt = now; v.over = over; }
     else if (db >= v.peakDb) { v.peakDb = db; v.peakAt = now; v.over = over; }
     else if (now - v.peakAt > holdSec * 1000) { v.peakDb = Math.max(db, v.peakDb - PEAK_DECAY_DB_PER_S * 16 / 1000); v.over = false; }
-    const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
-    g.clearRect(0, 0, W, H);
-    const padL = Math.min(34, W * 0.42), top = 6, bot = 4, mh = H - top - bot;
-    const y = (pos) => top + (1 - pos) * mh;
-    // scale
-    g.font = `${Math.max(9, Math.min(13, H * 0.05))}px system-ui`; g.textAlign = 'right'; g.textBaseline = 'middle';
-    g.fillStyle = '#8a93a0'; g.strokeStyle = '#2a2f37';
-    TICKS.forEach((t, k) => { const yy = y(1 - k / (TICKS.length - 1)); if (W > 40) g.fillText(t === 0 ? '0' : String(-t), padL - 4, yy);
-      g.beginPath(); g.moveTo(padL, yy); g.lineTo(W, yy); g.stroke(); });
-    // bar
-    const x0 = padL + 2, bw = W - x0 - 3;
-    const segs = [[-145, YELLOW_FROM, '#35d05a'], [YELLOW_FROM, RED_FROM, '#f2c230']];
-    for (const [lo, hi, col] of segs) {
-      const a = Math.min(db, hi); if (a <= lo) continue;
-      g.fillStyle = col; g.fillRect(x0, y(dbToPos(a)), bw, y(dbToPos(lo)) - y(dbToPos(a)));
+    const peakShown = hold ? v.peakDb : -145;
+    if (v.dirty || raw !== v.lastRaw || over !== v.lastOver || Math.abs(peakShown - v.lastPeakDrawn) > 0.05) {
+      const W = v.W, H = v.H, G = geom(W, H);
+      const g = v.canvas.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+      g.clearRect(0, 0, W, H);
+      g.drawImage(scaleLayer(W, H, dpr), 0, 0, W, H);
+      const segs = [[-145, YELLOW_FROM, '#35d05a'], [YELLOW_FROM, RED_FROM, '#f2c230']];
+      for (const [lo, hi, col] of segs) {
+        const a = Math.min(db, hi); if (a <= lo) continue;
+        g.fillStyle = col; g.fillRect(G.x0, G.y(dbToPos(a)), G.bw, G.y(dbToPos(lo)) - G.y(dbToPos(a)));
+      }
+      if (over) { g.fillStyle = '#ff3b3b'; g.fillRect(G.x0, 0, G.bw, G.top + 3); }
+      if (hold && v.peakDb > -60) { g.fillStyle = v.over ? '#ff3b3b' : (v.peakDb >= YELLOW_FROM ? '#f2c230' : '#35d05a'); g.fillRect(G.x0, G.y(dbToPos(v.peakDb)) - 1, G.bw, 2); }
+      v.dirty = false; v.lastRaw = raw; v.lastOver = over; v.lastPeakDrawn = peakShown;
     }
-    if (over) { g.fillStyle = '#ff3b3b'; g.fillRect(x0, 0, bw, top + 3); }
-    // peak line (only when hold is enabled)
-    if (hold && v.peakDb > -60) { g.fillStyle = v.over ? '#ff3b3b' : (v.peakDb >= YELLOW_FROM ? '#f2c230' : '#35d05a'); g.fillRect(x0, y(dbToPos(v.peakDb)) - 1, bw, 2); }
-    const nowEl = el.querySelector('.now'), pkEl = el.querySelector('.pk');
-    const fmt = (d, ov) => ov ? 'OVER' : (d <= -60 ? '–' : d.toFixed(1));
-    const cls = (base, d, ov) => base + (ov ? ' over' : d >= YELLOW_FROM ? ' hot' : '');
-    nowEl.textContent = fmt(db, over); nowEl.className = cls('now', db, over);
-    pkEl.textContent = fmt(v.peakDb, v.over); pkEl.className = cls('pk', v.peakDb, v.over) + (hold ? '' : ' off');
-    pkEl.parentElement.title = 'タップでこの ch のピークをリセット';
+    setText(v.nowEl, v, 'now', fmt(db, over), cls('now', db, over));
+    setText(v.pkEl, v, 'pk', fmt(v.peakDb, v.over), cls('pk', v.peakDb, v.over) + (hold ? '' : ' off'));
   });
   requestAnimationFrame(draw);
 }
@@ -641,7 +684,7 @@ document.getElementById('hold-inc').onclick = () => setHoldSec(holdSec + 1);
 renderHoldSec();
 document.getElementById('btn-hold-all-on').onclick = () => { setAllHold(true); togglePop(false); };
 document.getElementById('btn-hold-all-off').onclick = () => { setAllHold(false); togglePop(false); };
-function resetPeaks() { const now = performance.now(); for (const v of views.values()) { v.peakDb = -145; v.peakAt = now; v.over = false; } }
+function resetPeaks() { const now = performance.now(); for (const v of views.values()) { v.peakDb = -145; v.peakAt = now; v.over = false; v.dirty = true; } }
 document.getElementById('btn-reset').onclick = () => { resetPeaks(); togglePop(false); };
 document.getElementById('btn-close').onclick = closePicker;
 document.getElementById('btn-remove').onclick = () => { if (pickerTarget >= 0) { slots.splice(pickerTarget, 1); saveSlots(); renderSlots(); sendSubs(); } closePicker(); };
