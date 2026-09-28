@@ -80,6 +80,11 @@ button.danger { background: #4a1c1c; border-color: #7a2a2a; }
   background: #23262b; border: 1px solid #6a6f76; border-radius: 0.8vh; padding: 0.4vh 0.2vh; -moz-appearance: textfield; }
 .popover .stepper input::-webkit-outer-spin-button, .popover .stepper input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 .popover .stepper .unit { align-self: center; font-size: 2.2vh; color: #c3c8ce; }
+.popover .stepper button.inf { margin-left: 0.6vh; }
+.popover .stepper button.inf.on { background: #8ec8f0; border-color: #6fb3e3; color: #0f1a24; }
+.popover .stepper button:disabled { opacity: .4; }
+.popover .stepper input::placeholder { color: #e6e9ec; opacity: 1; }
+.popover .stepper.inf .unit { visibility: hidden; }
 .popover hr { width: 100%; border: 0; border-top: 1px solid #7a7f86; margin: 0.4vh 0; }
 #btn-peak { background: #3b3f45; border-color: #2c3036; color: #b8bec6; font-weight: 600; }
 #btn-peak.open { background: #8ec8f0; border-color: #6fb3e3; color: #0f1a24; }
@@ -187,6 +192,7 @@ body.editing #drawer { display: flex; }
             <input id="hold-sec" type="number" inputmode="decimal" min="0" max="60" step="0.1">
             <span class="unit">s</span>
             <button id="hold-inc">＋</button>
+            <button id="hold-inf" class="inf" title="無限: リセットするか Peak Hold を OFF にするまでピークを下げない">∞</button>
           </div>
         </div>
         <hr>
@@ -251,7 +257,19 @@ let holdSec = loadHoldSec();
 function loadHoldSec() { try { const v = parseFloat(localStorage.getItem('dm7meter.holdSec')); if (isFinite(v)) return clampHold(v); } catch {} return HOLD_SEC_DEFAULT; }
 function clampHold(v) { return Math.min(HOLD_SEC_MAX, Math.max(HOLD_SEC_MIN, Math.round(v * 10) / 10)); }
 function setHoldSec(v) { if (!isFinite(v)) v = holdSec; holdSec = clampHold(v); try { localStorage.setItem('dm7meter.holdSec', String(holdSec)); } catch {} renderHoldSec(); }
-function renderHoldSec() { const i = document.getElementById('hold-sec'); if (i && document.activeElement !== i) i.value = Number.isInteger(holdSec) ? String(holdSec) : holdSec.toFixed(1); }
+// Infinite hold: the peak never decays; it is cleared only by a reset (tap / Reset Peak) or by turning the channel's hold off.
+// Kept apart from holdSec so turning it off returns to the previous time.
+let holdInf = (() => { try { return localStorage.getItem('dm7meter.holdInf') === '1'; } catch { return false; } })();
+function setHoldInf(on) { holdInf = on; try { localStorage.setItem('dm7meter.holdInf', on ? '1' : '0'); } catch {} renderHoldSec(); }
+function renderHoldSec() {
+  const i = document.getElementById('hold-sec'); if (!i) return;
+  i.disabled = holdInf; i.placeholder = holdInf ? '∞' : '';
+  for (const id of ['hold-dec', 'hold-inc']) document.getElementById(id).disabled = holdInf;
+  document.getElementById('hold-inf').classList.toggle('on', holdInf);
+  i.parentElement.classList.toggle('inf', holdInf);
+  if (holdInf) i.value = '';
+  else if (document.activeElement !== i) i.value = Number.isInteger(holdSec) ? String(holdSec) : holdSec.toFixed(1);
+}
 const YELLOW_FROM = -18, RED_FROM = 0;   // ASSUMPTION: segment colours; DM7 colour thresholds not verified
 const COLOR_MAP = { Blue:'#3a7bff', Orange:'#ff8a2a', Yellow:'#f2c230', Purple:'#b25cff', Cyan:'#2fd3e6',
   Magenta:'#ff4fb0', Red:'#ff3b3b', Green:'#35d05a', Off:'#555', White:'#ddd', Pink:'#ff7fc1', SkyBlue:'#6fc3ff' };
@@ -578,7 +596,7 @@ function draw(now) {
     const hold = holdEnabled(s);
     if (!hold) { v.peakDb = db; v.peakAt = now; v.over = over; }
     else if (db >= v.peakDb) { v.peakDb = db; v.peakAt = now; v.over = over; }
-    else if (now - v.peakAt > holdSec * 1000) { v.peakDb = Math.max(db, v.peakDb - PEAK_DECAY_DB_PER_S * 16 / 1000); v.over = false; }
+    else if (!holdInf && now - v.peakAt > holdSec * 1000) { v.peakDb = Math.max(db, v.peakDb - PEAK_DECAY_DB_PER_S * 16 / 1000); v.over = false; }
     const peakShown = hold ? v.peakDb : -145, style = styleOf(s);
     if (v.dirty || raw !== v.lastRaw || over !== v.lastOver || Math.abs(peakShown - v.lastPeakDrawn) > 0.05) {
       const W = v.W, H = v.H, G = geom(W, H);
@@ -841,6 +859,7 @@ pop.addEventListener('click', (e) => e.stopPropagation());
 document.addEventListener('click', () => togglePop(false));
 document.getElementById('hold-dec').onclick = () => setHoldSec(holdSec - 1);
 document.getElementById('hold-inc').onclick = () => setHoldSec(holdSec + 1);
+document.getElementById('hold-inf').onclick = () => setHoldInf(!holdInf);
 { const inp = document.getElementById('hold-sec');
   inp.addEventListener('change', () => { setHoldSec(parseFloat(inp.value)); inp.blur(); renderHoldSec(); });
   inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') inp.blur(); });
