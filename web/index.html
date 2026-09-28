@@ -193,6 +193,7 @@ body.editing #drawer { display: flex; }
         <button id="btn-reset">Reset Peak</button>
       </div>
     </div>
+    <div class="seg" id="seg-meter" title="メーターの表示 (全 ch。ch ごとの設定はメーターをタップ)"><button data-style="bar">バー</button><button data-style="step">ステップ</button></div>
     <button id="btn-edit">編集</button>
     <button id="btn-full">全画面</button>
   </div>
@@ -229,6 +230,7 @@ body.editing #drawer { display: flex; }
     <div class="row">
       <div class="seg" id="seg-src"></div>
       <div class="seg" id="seg-pick"></div>
+      <div class="seg" id="seg-style" title="この ch のメーター表示"></div>
       <div class="grow"></div>
       <button id="btn-remove" class="danger">このメーターを外す</button>
       <button id="btn-close">閉じる</button>
@@ -256,6 +258,20 @@ const COLOR_MAP = { Blue:'#3a7bff', Orange:'#ff8a2a', Yellow:'#f2c230', Purple:'
 const SRC_LABEL = { InCh:'IN', Mix:'MIX', Mtrx:'MTRX', St:'ST' };
 const PICK_COLOR = { PreHPF:'#4fc3f7', PreEQ:'#4fc3f7', PreFader:'#f2c230', PostOn:'#35d05a' };   // metering-point colour code
 const PICK_SHORT = { PreHPF:'PreH', PreEQ:'PreE', PreFader:'PreF', PostOn:'Post' };             // chip label on narrow slots (< 15vh)
+// Meter style: 'bar' (continuous) | 'step' (segments). Global setting (top bar, ?meter=) + optional per-slot override (slot.style).
+// Step segments sit on the bar scale (same positions as the bar): segment k spans (STEP_EDGES[k+1], STEP_EDGES[k]] dB and is
+// lit once the level exceeds its lower edge, i.e. as soon as the bar would enter it (no rounding). 1 dB from 0 down to -10
+// (the -10 segment spans -12..-10), coarse below on the Editor ticks. OVER only for raw 0xFF.
+const METER_STYLES = ['bar', 'step'];
+const STEP_EDGES = [0, -1, -2, -3, -4, -5, -6, -7, -8, -9, -10, -12, -15, -18, -24, -30, -40, -50, -60];
+let meterStyle = loadMeterStyle();
+function loadMeterStyle() {
+  const q = new URLSearchParams(location.search).get('meter');
+  if (METER_STYLES.includes(q)) { try { localStorage.setItem('dm7meter.meterStyle', q); } catch {} return q; }
+  try { const v = localStorage.getItem('dm7meter.meterStyle'); if (METER_STYLES.includes(v)) return v; } catch {}
+  return 'bar';
+}
+function styleOf(slot) { return METER_STYLES.includes(slot.style) ? slot.style : meterStyle; }
 
 // ---------- state ----------
 let table = null, sources = {}, meta = null, ws = null;
@@ -292,7 +308,8 @@ function loadSlots() {
   // ?slots=InCh:17:PostOn,St:1:PostOn:0  (1-based channel; optional 4th field 0 = peak hold off) presets and persists the layout
   const q = new URLSearchParams(location.search).get('slots');
   if (q) { const s = q.split(',').map(x => x.split(':')).filter(a => a.length >= 3)
-      .map(([src, ch, pick, hold]) => ({ src, ch: Math.max(0, parseInt(ch, 10) - 1), pick, hold: hold !== '0' }));
+      .map(([src, ch, pick, hold, style]) => ({ src, ch: Math.max(0, parseInt(ch, 10) - 1), pick, hold: hold !== '0',
+                                                 ...(METER_STYLES.includes(style) ? { style } : {}) }));
     if (s.length) { try { localStorage.setItem('dm7meter.slots', JSON.stringify(s)); } catch {} return s; } }
   try { const s = JSON.parse(localStorage.getItem('dm7meter.slots')); if (Array.isArray(s) && s.length) return s; } catch {}
   return [ {src:'St',ch:0,pick:'PostOn'}, {src:'St',ch:1,pick:'PostOn'},
@@ -425,7 +442,7 @@ function renderSlots(rebuild = true) {
       const v = { peakDb: -145, peakAt: 0, over: false, canvas, W: 0, H: 0, dirty: true,
                   lastRaw: null, lastPeakDrawn: null, lastOver: null, lastHold: null,
                   nowEl: el.querySelector('.now'), pkEl: el.querySelector('.pk'), nowTxt: '', nowCls: '', pkTxt: '', pkCls: '' };
-      views.set(el, v); canvasViews.set(canvas, v); sizeObserver.observe(canvas);
+      views.set(el, v); canvasViews.set(canvas, v); observeSize(canvas);
     }
     el.style.setProperty('--stripe', colorOf(s.src, s.ch));
     el.querySelector('.name > span').textContent = labelOf(s.src, s.ch);
@@ -451,35 +468,93 @@ const DPR_CAP = parseFloat(QS.get('dpr')) || 0;          // ?dpr=1 : cap the bit
 const FPS_CAP = parseInt(QS.get('fps'), 10) || 0;         // ?fps=30 : cap the redraw rate (0 = display refresh)
 const canvasViews = new Map();
 function effDpr() { const d = window.devicePixelRatio || 1; return DPR_CAP ? Math.min(d, DPR_CAP) : d; }
+// The bitmap matches the canvas' real device pixels (device-pixel-content-box) so segment edges can be snapped to whole pixels
+// at any display scaling (125 % etc.); v.sx / v.sy map CSS px -> bitmap px. With ?dpr= the capped scale is used instead.
 const sizeObserver = new ResizeObserver((entries) => {
   const dpr = effDpr();
   for (const e of entries) {
     const v = canvasViews.get(e.target); if (!v) continue;
-    v.W = Math.round(e.contentRect.width); v.H = Math.round(e.contentRect.height);
-    const bw = Math.round(v.W * dpr), bh = Math.round(v.H * dpr);
+    v.W = e.contentRect.width; v.H = e.contentRect.height;
+    const dp = !DPR_CAP && e.devicePixelContentBoxSize?.[0];
+    const bw = dp ? dp.inlineSize : Math.round(v.W * dpr), bh = dp ? dp.blockSize : Math.round(v.H * dpr);
     if (v.canvas.width !== bw || v.canvas.height !== bh) { v.canvas.width = bw; v.canvas.height = bh; }
+    v.sx = v.W ? bw / v.W : dpr; v.sy = v.H ? bh / v.H : dpr;
     v.dirty = true;
   }
 });
+function observeSize(canvas) {
+  try { sizeObserver.observe(canvas, { box: 'device-pixel-content-box' }); } catch { sizeObserver.observe(canvas); }
+}
 function geom(W, H) {
   const padL = Math.min(34, W * 0.42), top = 6, bot = 4, mh = H - top - bot;
   return { padL, top, mh, x0: padL + 2, bw: W - padL - 5, y: (pos) => top + (1 - pos) * mh };
 }
+// Step segments for a W x H canvas, top to bottom: OVER (the bar's OVER strip), then one segment per STEP_EDGES interval placed
+// where the bar scale has it (heights differ: 1 dB is ~1/33 of the scale near the top, the -50 segment ~1/11).
+// Every edge is snapped to a whole bitmap pixel (sx / sy = bitmap px per CSS px) and every segment has the same gap below it,
+// so the spacing is even at any display scaling; a segment's top stays on its bar tick to within half a pixel.
+const SEG_ON = { g: '#35d05a', y: '#f2c230', r: '#ff3b3b' }, SEG_OFF = { g: '#16301d', y: '#3a3113', r: '#3d1717' };
+const stepCache = new Map();
+function stepGeom(W, H, sx, sy) {
+  const key = `${W}x${H}@${sx}x${sy}`;
+  let S = stepCache.get(key); if (S) return S;
+  const G = geom(W, H), Y = (db) => Math.round(G.y(dbToPos(db)) * sy);          // edge in bitmap px
+  const gap = Math.max(1, Math.round((G.mh / 33 >= 6 ? 2 : 1) * sy));             // one gap for all segments (1 dB ~ mh/33)
+  const x = Math.round(G.x0 * sx) / sx, w = Math.round((G.x0 + G.bw) * sx) / sx - x;
+  const seg = (top, bottom, extra) => ({ x, w, y: top / sy, h: Math.max(1, bottom - gap - top) / sy, ...extra });
+  const segs = [seg(0, Y(0), { hi: 'OVER', tone: 'r' })];                         // same strip the bar lights for OVER
+  for (let k = 0; k < STEP_EDGES.length - 1; k++) {
+    const hi = STEP_EDGES[k], lo = STEP_EDGES[k + 1];
+    segs.push(seg(Y(hi), Y(lo), { hi, lo, tone: lo >= YELLOW_FROM ? 'y' : 'g' }));
+  }
+  S = { G, segs };
+  if (stepCache.size > 48) stepCache.delete(stepCache.keys().next().value);
+  stepCache.set(key, S);
+  return S;
+}
 const scaleCache = new Map();
-function scaleLayer(W, H, dpr) {
-  const key = `${W}x${H}@${dpr}`;
+function scaleLayer(W, H, sx, sy, style) {     // rendered at the view's exact bitmap size, blitted 1:1
+  const key = `${W}x${H}@${sx}x${sy}/${style}`;
   let c = scaleCache.get(key); if (c) return c;
-  c = document.createElement('canvas'); c.width = Math.round(W * dpr); c.height = Math.round(H * dpr);
-  const g = c.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const G = geom(W, H);
-  g.font = `${Math.max(9, Math.min(13, H * 0.05))}px system-ui`; g.textAlign = 'right'; g.textBaseline = 'middle';
-  g.fillStyle = '#8a93a0'; g.strokeStyle = '#2a2f37';
-  TICKS.forEach((tk, k) => { const yy = G.y(1 - k / (TICKS.length - 1));
-    if (W > 40) g.fillText(tk === 0 ? '0' : String(-tk), G.padL - 4, yy);
-    g.beginPath(); g.moveTo(G.padL, yy); g.lineTo(W, yy); g.stroke(); });
+  c = document.createElement('canvas'); c.width = Math.round(W * sx); c.height = Math.round(H * sy);
+  const g = c.getContext('2d'); g.setTransform(sx, 0, 0, sy, 0, 0);
+  const G = geom(W, H), fontPx = Math.max(9, Math.min(13, H * 0.05));
+  g.font = `${fontPx}px system-ui`; g.textAlign = 'right'; g.textBaseline = 'middle';
+  if (style === 'step') {             // unlit segments + a label on every segment edge (same place as the bar ticks; thinned where they would overlap)
+    for (const s of stepGeom(W, H, sx, sy).segs) { g.fillStyle = SEG_OFF[s.tone]; g.fillRect(s.x, s.y, s.w, s.h); }
+    if (W > 40) {
+      g.fillStyle = '#8a93a0';
+      let lastY = -Infinity;
+      for (const e of STEP_EDGES) { const yy = G.y(dbToPos(e));
+        if (yy - lastY >= fontPx || e === -60) { g.fillText(e === 0 ? '0' : String(-e), G.padL - 4, yy); lastY = yy; } }
+    }
+  } else {
+    g.fillStyle = '#8a93a0'; g.strokeStyle = '#2a2f37';
+    TICKS.forEach((tk, k) => { const yy = G.y(1 - k / (TICKS.length - 1));
+      if (W > 40) g.fillText(tk === 0 ? '0' : String(-tk), G.padL - 4, yy);
+      g.beginPath(); g.moveTo(G.padL, yy); g.lineTo(W, yy); g.stroke(); });
+  }
   if (scaleCache.size > 48) scaleCache.delete(scaleCache.keys().next().value);
   scaleCache.set(key, c);
   return c;
+}
+function drawBar(g, G, W, H, db, over, hold, v) {
+  const segs = [[-145, YELLOW_FROM, '#35d05a'], [YELLOW_FROM, RED_FROM, '#f2c230']];
+  for (const [lo, hi, col] of segs) {
+    const a = Math.min(db, hi); if (a <= lo) continue;
+    g.fillStyle = col; g.fillRect(G.x0, G.y(dbToPos(a)), G.bw, G.y(dbToPos(lo)) - G.y(dbToPos(a)));
+  }
+  if (over) { g.fillStyle = '#ff3b3b'; g.fillRect(G.x0, 0, G.bw, G.top + 3); }
+  if (hold && v.peakDb > -60) { g.fillStyle = v.over ? '#ff3b3b' : (v.peakDb >= YELLOW_FROM ? '#f2c230' : '#35d05a'); g.fillRect(G.x0, G.y(dbToPos(v.peakDb)) - 1, G.bw, 2); }
+}
+function drawStep(g, G, W, H, db, over, hold, v) {
+  const { segs } = stepGeom(W, H, v.sx, v.sy);
+  let peakSeg = null;               // segment the held peak is in
+  if (hold) { if (v.over) peakSeg = segs[0]; else peakSeg = segs.find(s => s.hi !== 'OVER' && v.peakDb > s.lo) || null; }
+  for (const s of segs) {
+    const lit = s.hi === 'OVER' ? over : (over || db > s.lo);
+    if (lit || s === peakSeg) { g.fillStyle = SEG_ON[s.tone]; g.fillRect(s.x, s.y, s.w, s.h); }
+  }
 }
 function setText(el, v, key, txt, cls) {
   if (v[key + 'Txt'] !== txt) {   // reuse the text node: no detached-node churn for the GC
@@ -491,7 +566,7 @@ let lastDraw = 0;
 function draw(now) {
   if (FPS_CAP && now - lastDraw < 1000 / FPS_CAP - 1) { requestAnimationFrame(draw); return; }
   lastDraw = now;
-  const root = document.getElementById('slots'), dpr = effDpr();
+  const root = document.getElementById('slots');
   const fmt = (d, ov) => ov ? 'OVER' : (d <= -60 ? '–' : d.toFixed(1));
   const cls = (base, d, ov) => base + (ov ? ' over' : d >= YELLOW_FROM ? ' hot' : '');
   slots.forEach((s, i) => {
@@ -506,19 +581,14 @@ function draw(now) {
     if (!hold) { v.peakDb = db; v.peakAt = now; v.over = over; }
     else if (db >= v.peakDb) { v.peakDb = db; v.peakAt = now; v.over = over; }
     else if (now - v.peakAt > holdSec * 1000) { v.peakDb = Math.max(db, v.peakDb - PEAK_DECAY_DB_PER_S * 16 / 1000); v.over = false; }
-    const peakShown = hold ? v.peakDb : -145;
+    const peakShown = hold ? v.peakDb : -145, style = styleOf(s);
     if (v.dirty || raw !== v.lastRaw || over !== v.lastOver || Math.abs(peakShown - v.lastPeakDrawn) > 0.05) {
       const W = v.W, H = v.H, G = geom(W, H);
-      const g = v.canvas.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0);
-      g.clearRect(0, 0, W, H);
-      g.drawImage(scaleLayer(W, H, dpr), 0, 0, W, H);
-      const segs = [[-145, YELLOW_FROM, '#35d05a'], [YELLOW_FROM, RED_FROM, '#f2c230']];
-      for (const [lo, hi, col] of segs) {
-        const a = Math.min(db, hi); if (a <= lo) continue;
-        g.fillStyle = col; g.fillRect(G.x0, G.y(dbToPos(a)), G.bw, G.y(dbToPos(lo)) - G.y(dbToPos(a)));
-      }
-      if (over) { g.fillStyle = '#ff3b3b'; g.fillRect(G.x0, 0, G.bw, G.top + 3); }
-      if (hold && v.peakDb > -60) { g.fillStyle = v.over ? '#ff3b3b' : (v.peakDb >= YELLOW_FROM ? '#f2c230' : '#35d05a'); g.fillRect(G.x0, G.y(dbToPos(v.peakDb)) - 1, G.bw, 2); }
+      const g = v.canvas.getContext('2d'); g.setTransform(1, 0, 0, 1, 0, 0);
+      g.clearRect(0, 0, v.canvas.width, v.canvas.height);
+      g.drawImage(scaleLayer(W, H, v.sx, v.sy, style), 0, 0);   // same bitmap size: 1:1 copy, no resampling
+      g.setTransform(v.sx, 0, 0, v.sy, 0, 0);
+      (style === 'step' ? drawStep : drawBar)(g, G, W, H, db, over, hold, v);
       v.dirty = false; v.lastRaw = raw; v.lastOver = over; v.lastPeakDrawn = peakShown;
     }
     setText(v.nowEl, v, 'now', fmt(db, over), cls('now', db, over));
@@ -690,7 +760,8 @@ function onDragEnd(e) {
   if (active) suppressClickUntil = performance.now() + 300;
   if (!active || !target) return;
   if (item.kind === 'tile') {
-    if (target.replace !== undefined) slots[target.replace] = { src: item.src, ch: item.ch, pick: item.pick, hold: slots[target.replace].hold };
+    if (target.replace !== undefined) { const old = slots[target.replace];
+      slots[target.replace] = { src: item.src, ch: item.ch, pick: item.pick, hold: old.hold, ...(METER_STYLES.includes(old.style) ? { style: old.style } : {}) }; }
     else if (target.insert !== undefined) slots.splice(target.insert, 0, { src: item.src, ch: item.ch, pick: item.pick, hold: true });
   } else {
     const from = item.index;
@@ -739,6 +810,17 @@ function buildPicker() {
       const cur = pickerTarget >= 0 && slots[pickerTarget];
       if (cur && cur.src === pSrc && cur.pick !== p) { cur.pick = p; saveSlots(); renderSlots(false); sendSubs(); }   // keep the channel, switch the point
       buildPicker(); }; segP.appendChild(b); });
+  const segM = document.getElementById('seg-style'); segM.innerHTML = '';
+  segM.hidden = pickerTarget < 0;
+  if (pickerTarget >= 0) {
+    const cur = slots[pickerTarget];
+    for (const [val, label] of [[null, '全体に従う'], ['bar', 'バー'], ['step', 'ステップ']]) {
+      const b = document.createElement('button'); b.textContent = label;
+      b.className = (METER_STYLES.includes(cur.style) ? cur.style : null) === val ? 'on' : '';
+      b.onclick = () => { if (val) cur.style = val; else delete cur.style; saveSlots(); markAllDirty(); buildPicker(); };
+      segM.appendChild(b);
+    }
+  }
   const grid = document.getElementById('grid'); grid.innerHTML = '';
   const n = sources[pSrc]?.count || 0;
   for (let ch = 0; ch < n; ch++) {
@@ -748,6 +830,7 @@ function buildPicker() {
     const cur = pickerTarget >= 0 && slots[pickerTarget];
     if (cur && cur.src === pSrc && cur.ch === ch && cur.pick === pPick) b.classList.add('on');
     b.onclick = () => { const s = { src: pSrc, ch, pick: pPick, hold: pickerTarget >= 0 ? slots[pickerTarget].hold !== false : true };
+      if (pickerTarget >= 0 && METER_STYLES.includes(slots[pickerTarget].style)) s.style = slots[pickerTarget].style;   // keep the per-ch style
       if (pickerTarget >= 0) slots[pickerTarget] = s; else slots.push(s);
       saveSlots(); renderSlots(); sendSubs(); closePicker(); };
     grid.appendChild(b);
@@ -767,6 +850,13 @@ document.getElementById('hold-inc').onclick = () => setHoldSec(holdSec + 1);
 renderHoldSec();
 document.getElementById('btn-hold-all-on').onclick = () => { setAllHold(true); togglePop(false); };
 document.getElementById('btn-hold-all-off').onclick = () => { setAllHold(false); togglePop(false); };
+function markAllDirty() { for (const v of views.values()) v.dirty = true; }
+function renderMeterSeg() { document.querySelectorAll('#seg-meter button').forEach(b => b.classList.toggle('on', b.dataset.style === meterStyle)); }
+document.querySelectorAll('#seg-meter button').forEach(b => b.onclick = () => {
+  meterStyle = b.dataset.style; try { localStorage.setItem('dm7meter.meterStyle', meterStyle); } catch {}
+  renderMeterSeg(); markAllDirty();
+});
+renderMeterSeg();
 function resetPeaks() { const now = performance.now(); for (const v of views.values()) { v.peakDb = -145; v.peakAt = now; v.over = false; v.dirty = true; } }
 document.getElementById('btn-reset').onclick = () => { resetPeaks(); togglePop(false); };
 document.getElementById('btn-close').onclick = closePicker;
