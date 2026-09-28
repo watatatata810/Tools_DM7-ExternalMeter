@@ -27,29 +27,35 @@ button { font: inherit; color: var(--fg); background: #1f242b; border: 1px solid
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.danger { background: #4a1c1c; border-color: #7a2a2a; }
 #slots { flex: 1; min-height: 0; display: flex; gap: 0.6vh; padding: 0.8vh; overflow-x: auto; overflow-y: hidden; align-items: stretch; }
-.slot { position: relative; display: flex; flex-direction: column; flex: 1 1 0; min-width: 6vh; max-width: 40vh;
+/* Narrow slots: text scales with the slot width (cqw) once the vh size no longer fits; below 15vh the labels switch to short forms.
+   min-width 10vh fits 15 meters at 1280x768 with ~6-7 characters per name line; beyond that the row scrolls horizontally. */
+.slot { position: relative; display: flex; flex-direction: column; flex: 1 1 0; min-width: 10vh; max-width: 40vh; container-type: inline-size;
   background: var(--panel); border: 1px solid var(--line); border-radius: 1vh; overflow: hidden; }
 .slot .head { padding: 0.5vh 0.4vh 0.3vh; text-align: center; border-top: 0.8vh solid var(--stripe, #555); }
-.slot .name { font-size: 2.9vh; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.slot .sub { font-size: 2.1vh; color: var(--dim); white-space: nowrap; }
+/* Name: up to 2 lines, ellipsis after that. The block is always 2 lines tall so one- and two-line names keep every head the same height. */
+.slot .name { font-size: min(2.9vh, 34cqw); font-weight: 600; line-height: 1.15; height: 2.3em; display: flex; align-items: center; justify-content: center; }
+.slot .name > span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
+.slot .sub { font-size: min(2.1vh, 26cqw); color: var(--dim); white-space: nowrap; }
 .pick-chip { display: inline-block; padding: 0 0.7vh; border-radius: 0.5vh; font-weight: 600; color: #0b0d10; background: var(--pick, #888); }
 .seg button.pick { border-bottom: 0.5vh solid var(--pick, transparent); }
 .seg button.pick.on { background: var(--pick); border-color: var(--pick); color: #0b0d10; }
 .slot canvas { flex: 1 1 0; width: 100%; height: 0; min-height: 0; min-width: 0; display: block; }  /* height from flex only: the bitmap size (clientHeight*dpr) must never feed back into layout */
 .slot .head, .slot .vals { flex: 0 0 auto; }
 .slot .vals { display: flex; flex-direction: column; align-items: center; padding: 0.3vh 0 0.5vh; font-variant-numeric: tabular-nums; line-height: 1.1; }
-.slot .now { font-size: 3.2vh; font-weight: 600; color: var(--fg); }
-.slot .pk { font-size: 2.2vh; color: var(--dim); }
+.slot .now { font-size: min(3.2vh, 36cqw); font-weight: 600; color: var(--fg); }
+.slot .pk { font-size: min(2.2vh, 30cqw); color: var(--dim); }
 .slot .vals .tap { display: flex; flex-direction: column; align-items: center; width: 92%; padding: 0.2vh 0 0.3vh; border-radius: 0.6vh; cursor: pointer; transition: background .25s; }
 .slot .vals .tap.flash { background: #2a3f55; transition: none; }
-.slot .pk::before { content: 'PK '; font-size: 1.7vh; letter-spacing: 0.05em; }
+.slot .pk::before { content: 'PK '; font-size: min(1.7vh, 22cqw); letter-spacing: 0.05em; }
 .slot .pk.off { visibility: hidden; }
 .slot .hot { color: var(--yellow); }
 .slot .over { color: var(--red); font-weight: 700; }
-.slot .hold { margin: 0.5vh auto 0; padding: 0.35vh 0.6vh; font-size: 2vh; font-weight: 600; line-height: 1.4; border-radius: 0.6vh;
+.slot .hold { margin: 0.5vh auto 0; padding: 0.35vh 0.3vh; font-size: min(2vh, 24cqw); font-weight: 600; line-height: 1.4; border-radius: 0.6vh;
   width: 86%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .slot .hold.off { background: #3b3f45; border-color: #2c3036; color: #9aa1aa; }
 .slot .hold.on { background: #8ec8f0; border-color: #6fb3e3; color: #0f1a24; }
+.slot .abbr { display: none; }
+@container (max-width: 15vh) { .slot .full { display: none; } .slot .abbr { display: inline; } }
 #top .lbl { font-size: 2.3vh; color: var(--dim); white-space: nowrap; }
 #top .seg { display: flex; }
 .seg button { border-radius: 0; white-space: nowrap; }
@@ -88,7 +94,25 @@ body.offline.editing .slot::after { display: none; }
 #top .dev.offline { color: #ff6b6b; }
 /* ---- edit mode: reorder / assign by drag ---- */
 #btn-edit.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-body.editing #slots { overflow: hidden; }               /* edge auto-scroll handles overflow while dragging */
+/* ---- custom scrollbars (touch-sized; native ones are thin and not reliably draggable by touch). The scroller keeps
+   native wheel / swipe scrolling, only its own bar is hidden. Shown only while the content overflows. ---- */
+.sc-hide { scrollbar-width: none; }
+.sc-hide::-webkit-scrollbar { display: none; }
+.sc-wrap { display: flex; min-width: 0; min-height: 0; gap: 0.6vh; }   /* scroller + vertical bar side by side */
+.sbar { display: none; position: relative; flex: 0 0 auto; border-radius: 1.8vh; background: #1f242b; border: 1px solid var(--line); touch-action: none; cursor: pointer; }
+.sbar.need { display: block; }
+.sbar.h { height: max(3.6vh, 24px); }
+.sbar.v { width: max(3.6vh, 24px); }
+.sbar .thumb { position: absolute; border-radius: 1.6vh; background: #4a5461; cursor: grab; }
+.sbar.h .thumb { top: 2px; bottom: 2px; left: 0; min-width: 6vh; }
+.sbar.v .thumb { left: 2px; right: 2px; top: 0; min-height: 6vh; }
+.sbar .thumb::after { content: ''; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); }   /* grip lines */
+.sbar.h .thumb::after { width: 3vh; height: 0.5vh; border-top: 2px solid #8a93a0; border-bottom: 2px solid #8a93a0; }
+.sbar.v .thumb::after { width: 0.5vh; height: 3vh; border-left: 2px solid #8a93a0; border-right: 2px solid #8a93a0; }
+.sbar.drag .thumb { background: var(--accent); cursor: grabbing; }
+#hbar { margin: 0 0.8vh 0.6vh; }
+#drawer > .sc-wrap, #picker .box > .sc-wrap { flex: 1; }
+#devpick .box > .sc-wrap { flex: 0 1 auto; }
 body.editing .slot { touch-action: none; cursor: grab; }
 body.editing .slot canvas, body.editing .slot .vals { display: none; }   /* compact card while editing */
 .slot .edit-tools { display: none; }
@@ -103,7 +127,7 @@ body.editing #drawer { display: flex; }
 #drawer.drop-remove { box-shadow: inset 0 0 0 0.5vh var(--red); }
 #drawer .tabs { display: flex; gap: 0.8vh; align-items: center; flex: 0 0 auto; }
 #drawer .hint { color: var(--dim); font-size: 2.2vh; flex: 1; text-align: right; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-#tiles { flex: 1; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(13vh, 1fr)); gap: 0.5vh; align-content: start; padding: 0.3vh; }
+#tiles { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(13vh, 1fr)); gap: 0.5vh; align-content: start; padding: 0.3vh; }
 #tiles button { display: flex; flex-direction: column; align-items: flex-start; padding: 0.5vh 0.7vh; border-left: 0.8vh solid var(--stripe, #555);
   text-align: left; touch-action: pan-y; cursor: grab; }
 #tiles button .n { font-size: 2vh; color: var(--dim); }
@@ -120,7 +144,7 @@ body.editing #drawer { display: flex; }
   display: flex; flex-direction: column; padding: 1.4vh 1.6vh; gap: 1vh; }
 #devpick h2 { margin: 0; font-size: 3.4vh; }
 #devpick .note { color: var(--dim); font-size: 2.4vh; }
-#devlist { display: flex; flex-direction: column; gap: 0.8vh; overflow-y: auto; }
+#devlist { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.8vh; overflow-y: auto; }
 #devlist button { display: flex; align-items: baseline; gap: 1.6vh; text-align: left; padding: 1.2vh 1.6vh; font-size: 3vh; }
 #devlist button .ip { font-family: ui-monospace, Consolas, monospace; color: var(--dim); font-size: 2.6vh; }
 #devlist button .prod { color: var(--dim); font-size: 2.4vh; }
@@ -137,7 +161,7 @@ body.editing #drawer { display: flex; }
 #picker .row .grow { flex: 1; }
 .seg button:first-child { border-radius: 0.8vh 0 0 0.8vh; } .seg button:last-child { border-radius: 0 0.8vh 0.8vh 0; }
 .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-#grid { flex: 1; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(14vh, 1fr)); gap: 0.6vh; align-content: start; }
+#grid { flex: 1; min-width: 0; overflow-y: auto; display: grid; grid-template-columns: repeat(auto-fill, minmax(14vh, 1fr)); gap: 0.6vh; align-content: start; }
 #grid button { display: flex; flex-direction: column; align-items: flex-start; padding: 0.6vh 0.8vh; border-left: 0.8vh solid var(--stripe, #555); text-align: left; }
 #grid button .n { font-size: 2.2vh; color: var(--dim); }
 #grid button .l { font-size: 2.8vh; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
@@ -173,6 +197,7 @@ body.editing #drawer { display: flex; }
     <button id="btn-full">全画面</button>
   </div>
   <div id="slots"></div>
+  <div id="hbar" class="sbar h" title="ドラッグで左右に移動"><div class="thumb"></div></div>
   <div id="drawer">
     <div class="tabs">
       <div class="seg" id="seg-dsrc"></div>
@@ -230,6 +255,7 @@ const COLOR_MAP = { Blue:'#3a7bff', Orange:'#ff8a2a', Yellow:'#f2c230', Purple:'
   Magenta:'#ff4fb0', Red:'#ff3b3b', Green:'#35d05a', Off:'#555', White:'#ddd', Pink:'#ff7fc1', SkyBlue:'#6fc3ff' };
 const SRC_LABEL = { InCh:'IN', Mix:'MIX', Mtrx:'MTRX', St:'ST' };
 const PICK_COLOR = { PreHPF:'#4fc3f7', PreEQ:'#4fc3f7', PreFader:'#f2c230', PostOn:'#35d05a' };   // metering-point colour code
+const PICK_SHORT = { PreHPF:'PreH', PreEQ:'PreE', PreFader:'PreF', PostOn:'Post' };             // chip label on narrow slots (< 15vh)
 
 // ---------- state ----------
 let table = null, sources = {}, meta = null, ws = null;
@@ -377,7 +403,7 @@ function renderSlots(rebuild = true) {
     let el = root.children[i];
     if (!el || !views.has(el)) {
       el = document.createElement('div'); el.className = 'slot';
-      el.innerHTML = `<div class="head"><div class="name"></div><div class="sub"></div></div><canvas></canvas>
+      el.innerHTML = `<div class="head"><div class="name"><span></span></div><div class="sub"></div></div><canvas></canvas>
         <div class="vals"><div class="tap"><div class="now">–</div><div class="pk">–</div></div><button class="hold">ON</button></div>
         <div class="edit-tools"><div class="grip">≡</div><button class="del" title="このメーターを外す">×</button></div>`;
       el.addEventListener('click', () => { if (!editing) openPicker(i); });
@@ -402,11 +428,14 @@ function renderSlots(rebuild = true) {
       views.set(el, v); canvasViews.set(canvas, v); sizeObserver.observe(canvas);
     }
     el.style.setProperty('--stripe', colorOf(s.src, s.ch));
-    el.querySelector('.name').textContent = labelOf(s.src, s.ch);
-    const sub = el.querySelector('.sub'); sub.innerHTML = ''; sub.append(`${SRC_LABEL[s.src]}${s.ch + 1} `);
-    const chip = document.createElement('span'); chip.className = 'pick-chip'; chip.textContent = s.pick; chip.style.setProperty('--pick', PICK_COLOR[s.pick] || '#888'); sub.appendChild(chip);
+    el.querySelector('.name > span').textContent = labelOf(s.src, s.ch);
+    const sub = el.querySelector('.sub'); sub.innerHTML = '';
+    const num = document.createElement('span'); num.className = 'full'; num.textContent = `${SRC_LABEL[s.src]}${s.ch + 1} `; sub.appendChild(num);
+    const chip = document.createElement('span'); chip.className = 'pick-chip'; chip.style.setProperty('--pick', PICK_COLOR[s.pick] || '#888');
+    chip.innerHTML = '<span class="full"></span><span class="abbr"></span>';
+    chip.firstChild.textContent = s.pick; chip.lastChild.textContent = PICK_SHORT[s.pick] || s.pick; sub.appendChild(chip);
     const hb = el.querySelector('.hold'), on = holdEnabled(s);
-    hb.textContent = 'Peak Hold';
+    hb.innerHTML = '<span class="full">Peak Hold</span><span class="abbr">HOLD</span>';
     hb.className = 'hold ' + (on ? 'on' : 'off');
     hb.title = 'この ch のピークホールドを切替';
   });
@@ -506,6 +535,60 @@ function setEditing(on) {
   const b = document.getElementById('btn-edit'); b.textContent = on ? '完了' : '編集'; b.classList.toggle('on', on);
   if (on) { closePicker(); togglePop(false); buildDrawer(); }
   renderSlots(false);
+  requestAnimationFrame(() => slotBar.update());   // card sizes change when entering / leaving edit mode
+}
+
+// Custom scrollbar for `scroller` along axis 'x' | 'y'. `bar` is an existing .sbar element; without one a vertical bar is
+// created and scroller + bar are wrapped in a .sc-wrap row. Drag the thumb, or tap the track to jump there and keep dragging.
+function makeScrollbar(scroller, axis, bar) {
+  const X = axis === 'x';
+  if (!bar) {
+    bar = document.createElement('div'); bar.innerHTML = '<div class="thumb"></div>';
+    const wrap = document.createElement('div'); wrap.className = 'sc-wrap';
+    scroller.replaceWith(wrap); wrap.append(scroller, bar);
+  }
+  bar.classList.add('sbar', X ? 'h' : 'v');
+  scroller.classList.add('sc-hide');
+  const thumb = bar.querySelector('.thumb');
+  const P = X ? { pos: 'scrollLeft', view: 'clientWidth', total: 'scrollWidth', track: 'clientWidth', off: 'offsetWidth', size: 'width', start: 'left', client: 'clientX', tr: 'translateX' }
+              : { pos: 'scrollTop', view: 'clientHeight', total: 'scrollHeight', track: 'clientHeight', off: 'offsetHeight', size: 'height', start: 'top', client: 'clientY', tr: 'translateY' };
+  let drag = null, queued = false;
+  const geom = () => {
+    const view = scroller[P.view], total = scroller[P.total], track = bar[P.track];
+    const t = Math.max(thumb[P.off] || 0, Math.min(track, track * view / Math.max(total, 1)));   // CSS min size keeps it grabbable
+    return { max: Math.max(0, total - view), thumb: t, free: Math.max(1, track - t) };
+  };
+  function update() {
+    queued = false;
+    const need = scroller[P.total] > scroller[P.view] + 1;
+    bar.classList.toggle('need', need);
+    if (!need) return;
+    thumb.style[P.size] = `${bar[P.track] * scroller[P.view] / scroller[P.total]}px`;
+    const g = geom();
+    thumb.style.transform = `${P.tr}(${g.max ? scroller[P.pos] / g.max * g.free : 0}px)`;
+  }
+  const schedule = () => { if (!queued) { queued = true; requestAnimationFrame(update); } };
+  const seek = (e, grab) => { const g = geom(), r = bar.getBoundingClientRect();
+    scroller[P.pos] = Math.min(g.free, Math.max(0, e[P.client] - r[P.start] - grab)) / g.free * g.max; };
+  bar.addEventListener('pointerdown', (e) => {
+    if (!e.isPrimary) return;
+    const grab = e.target === thumb ? e[P.client] - thumb.getBoundingClientRect()[P.start] : geom().thumb / 2;
+    if (e.target !== thumb) seek(e, grab);    // track tap: centre the thumb under the finger
+    drag = { id: e.pointerId, grab };
+    bar.setPointerCapture(e.pointerId); bar.classList.add('drag'); e.preventDefault(); e.stopPropagation();
+  });
+  bar.addEventListener('pointermove', (e) => { if (drag && e.pointerId === drag.id) seek(e, drag.grab); });
+  const end = (e) => { if (drag && e.pointerId === drag.id) { drag = null; bar.classList.remove('drag'); } };
+  bar.addEventListener('pointerup', end); bar.addEventListener('pointercancel', end);
+  bar.addEventListener('click', (e) => e.stopPropagation());    // e.g. the picker backdrop closes on click
+  scroller.addEventListener('scroll', schedule, { passive: true });
+  new ResizeObserver(schedule).observe(scroller);
+  new MutationObserver(schedule).observe(scroller, { childList: true });   // items added / removed. Not subtree: meter text changes every frame
+  window.addEventListener('resize', schedule);
+  if (X)   // vertical wheel -> horizontal scroll (the row has no vertical overflow)
+    scroller.addEventListener('wheel', (e) => { if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) return; scroller.scrollLeft += e.deltaY; e.preventDefault(); }, { passive: false });
+  schedule();
+  return { update };
 }
 document.getElementById('btn-edit').onclick = () => setEditing(!editing);
 function buildDrawer() {
@@ -717,6 +800,8 @@ function startDemo() {
 // ---------- boot ----------
 const DEMO = new URLSearchParams(location.search).has('demo');
 fetch('/table.json').then(r => r.json()).then(t => { table = t; });
+const slotBar = makeScrollbar(document.getElementById('slots'), 'x', document.getElementById('hbar'));
+for (const id of ['tiles', 'grid', 'devlist']) makeScrollbar(document.getElementById(id), 'y');
 renderSlots();
 if (DEMO) startDemo(); else connect();
 requestAnimationFrame(draw);
