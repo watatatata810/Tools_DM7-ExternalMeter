@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DM7 Meter Demo</title>
+<style>
+:root { --bg: #0b0d10; --panel: #15181d; --line: #2a2f37; --fg: #e8ebef; --dim: #8a93a0; --accent: #3aa0ff; --red: #ff3b3b; --amber: #f2c230; --green: #35d05a; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 13px/1.4 system-ui, "Segoe UI", "Noto Sans JP", sans-serif; }
+body { display: flex; flex-direction: column; }
+#ctl { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: flex-start; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.grp { display: flex; flex-direction: column; gap: 4px; }
+.grp > .t { color: var(--dim); font-size: 11px; letter-spacing: .04em; }
+.row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+button, select, input { font: inherit; color: var(--fg); background: #1f242b; border: 1px solid var(--line); border-radius: 5px; padding: 3px 9px; }
+button:hover { border-color: #3a414b; }
+button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.on.off { background: #7a2a2a; border-color: #a33; }
+button.on.unreachable { background: #6b5410; border-color: #a3801a; }
+input[type=number] { width: 68px; }
+input.q { width: 280px; }
+.seg { display: flex; }
+.seg button { border-radius: 0; margin-left: -1px; }
+.seg button:first-child { border-radius: 5px 0 0 5px; margin-left: 0; }
+.seg button:last-child { border-radius: 0 5px 5px 0; }
+.con { display: flex; gap: 6px; align-items: center; }
+.con .nm { min-width: 150px; }
+.con .ip { color: var(--dim); font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+#err { display: none; padding: 10px 12px; background: #4a1c1c; color: #f2b8b8; }
+#err.show { display: block; }
+#stage { flex: 1; min-height: 0; position: relative; overflow: hidden; }
+#frame-wrap { position: absolute; left: 12px; top: 12px; transform-origin: 0 0; box-shadow: 0 0 0 1px var(--line), 0 6px 24px rgba(0,0,0,.6); }
+#frame-wrap iframe { display: block; border: 0; background: var(--bg); }
+#info { color: var(--dim); font-size: 12px; }
+a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div id="err">デモモードではありません。<code>python bridge/server.py --demo</code> (実行ファイルなら <code>dm7-external-meter --demo</code>) で起動してください。</div>
+<div id="ctl">
+  <div class="grp"><span class="t">信号</span><div class="seg" id="pattern"></div></div>
+  <div class="grp"><span class="t">ch 名・色</span>
+    <div class="row">
+      <button id="btn-label" title="低い番号の ch を 1 つ改名 / 色替え (NOTIFY set)">1 ch 変更</button>
+      <label><input type="checkbox" id="auto-labels"> 5 秒ごと</label>
+      <button id="btn-scene" title="全 ch の名前を別セットに入れ替え (シーンリコール相当)">シーンリコール</button>
+    </div>
+  </div>
+  <div class="grp"><span class="t">疑似 DM7 (電源 OFF = 接続拒否、無応答 = ケーブル抜け相当)</span><div id="consoles"></div>
+    <div class="row"><button id="btn-unselect" title="接続先を未選択に戻す。2 台見つかるのでメーター画面が選択を求める">接続先を未選択に戻す</button></div>
+  </div>
+  <div class="grp"><span class="t">プレビュー</span>
+    <div class="row">
+      <select id="size"></select>
+      <input type="number" id="w" min="200" max="4000" title="幅 px"> × <input type="number" id="h" min="150" max="3000" title="高さ px">
+      <label><input type="checkbox" id="fit" checked> 縮小して全体表示</label>
+    </div>
+    <div class="row">
+      <input class="q" id="q" placeholder="?slots=St:1:PostOn,InCh:1:PostOn&amp;fps=30" title="メーター画面に渡す URL パラメータ">
+      <button id="btn-reload">再読込</button>
+      <a id="open" target="_blank" rel="noopener">別タブで開く</a>
+    </div>
+    <span id="info"></span>
+  </div>
+</div>
+<div id="stage"><div id="frame-wrap"><iframe id="view" title="メーター画面"></iframe></div></div>
+<script>
+'use strict';
+const PATTERN_LABEL = { music: '演奏風', static: '固定 (スクショ用)', sweep: 'スイープ', silent: '無音' };
+const STATE_LABEL = { online: '正常', off: '電源 OFF', unreachable: '無応答' };
+const SIZES = [['window', 'ウィンドウ全体'], ['1280x768', '1280×768 (実機)'], ['1366x768', '1366×768'], ['1920x1080', '1920×1080'],
+  ['1920x480', '1920×480 (横長バー)'], ['1480x320', '1480×320 (横長バー)'], ['1024x600', '1024×600'], ['800x480', '800×480 (7インチ)'], ['custom', 'カスタム']];
+const $ = (id) => document.getElementById(id);
+const store = { get(k, d) { try { const v = localStorage.getItem('dm7demo.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+                set(k, v) { try { localStorage.setItem('dm7demo.' + k, JSON.stringify(v)); } catch {} } };
+
+// ---------- demo state ----------
+let state = null;
+async function api(body) {
+  const r = await fetch('/api/demo', body ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) } : {});
+  if (!r.ok) throw new Error(r.status);
+  return r.json();
+}
+async function refresh(body) {
+  try { state = await api(body); $('err').classList.remove('show'); render(); }
+  catch { $('err').classList.add('show'); }
+}
+function render() {
+  const p = $('pattern'); p.innerHTML = '';
+  for (const k of state.patterns) {
+    const b = document.createElement('button'); b.textContent = PATTERN_LABEL[k] || k; b.className = k === state.pattern ? 'on' : '';
+    b.onclick = () => refresh({ action: 'pattern', value: k }); p.appendChild(b);
+  }
+  $('auto-labels').checked = state.auto_labels;
+  const cs = $('consoles'); cs.innerHTML = '';
+  for (const c of state.consoles) {
+    const row = document.createElement('div'); row.className = 'con';
+    row.innerHTML = '<span class="nm"></span><span class="ip"></span><div class="seg"></div>';
+    row.querySelector('.nm').textContent = `${c.productname} ${c.devicename}`;
+    row.querySelector('.ip').textContent = c.ip;
+    for (const s of Object.keys(STATE_LABEL)) {
+      const b = document.createElement('button'); b.textContent = STATE_LABEL[s];
+      b.className = s === c.state ? `on ${s}` : '';
+      b.onclick = () => refresh({ action: 'console', ip: c.ip, state: s });
+      row.querySelector('.seg').appendChild(b);
+    }
+    cs.appendChild(row);
+  }
+}
+$('btn-label').onclick = () => refresh({ action: 'label' });
+$('auto-labels').onchange = (e) => refresh({ action: 'auto_labels', value: e.target.checked });
+$('btn-scene').onclick = () => refresh({ action: 'scene' });
+$('btn-unselect').onclick = () => refresh({ action: 'unselect' });
+refresh();
+setInterval(() => refresh(), 3000);
+
+// ---------- preview ----------
+const sizeSel = $('size');
+for (const [v, t] of SIZES) sizeSel.add(new Option(t, v));
+sizeSel.value = store.get('size', '1280x768');
+$('w').value = store.get('w', 1280); $('h').value = store.get('h', 768);
+$('fit').checked = store.get('fit', true);
+$('q').value = store.get('q', '');
+function viewSize() {
+  const st = $('stage');
+  if (sizeSel.value === 'window') return [st.clientWidth - 24, st.clientHeight - 24];
+  if (sizeSel.value === 'custom') return [+$('w').value || 1280, +$('h').value || 768];
+  return sizeSel.value.split('x').map(Number);
+}
+function layout() {
+  const [w, h] = viewSize(), st = $('stage'), f = $('view');
+  const custom = sizeSel.value === 'custom';
+  $('w').disabled = $('h').disabled = !custom;
+  if (!custom) { $('w').value = w; $('h').value = h; }
+  f.style.width = w + 'px'; f.style.height = h + 'px';
+  const s = $('fit').checked ? Math.min(1, (st.clientWidth - 24) / w, (st.clientHeight - 24) / h) : 1;
+  $('frame-wrap').style.transform = `scale(${s})`;
+  st.style.overflow = s < 1 || $('fit').checked ? 'hidden' : 'auto';
+  $('info').textContent = `メーター画面 ${w}×${h} px` + (s < 1 ? ` (表示は ${Math.round(s * 100)}% に縮小。vh は ${h} px 基準のまま)` : '');
+}
+function src() { const q = $('q').value.trim(); return '/' + (q && !q.startsWith('?') ? '?' + q : q); }
+function reload() { $('view').src = src(); $('open').href = src(); }
+function save() { store.set('size', sizeSel.value); store.set('w', +$('w').value); store.set('h', +$('h').value); store.set('fit', $('fit').checked); store.set('q', $('q').value); }
+for (const id of ['size', 'w', 'h', 'fit']) $(id).addEventListener('input', () => { save(); layout(); });
+$('q').addEventListener('keydown', (e) => { if (e.key === 'Enter') { save(); reload(); } });
+$('btn-reload').onclick = () => { save(); reload(); };
+new ResizeObserver(layout).observe($('stage'));
+layout(); reload();
+</script>
+</body>
+</html>

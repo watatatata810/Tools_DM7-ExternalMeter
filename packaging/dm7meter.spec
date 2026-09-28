@@ -8,12 +8,12 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(SPEC), ".."))
 hidden = (
     collect_submodules("uvicorn")          # loops / protocols are imported by string name
     + collect_submodules("websockets")
-    + ["psutil"]
+    + ["psutil", "demo_console"]           # --demo imports it lazily
 )
 
 a = Analysis(
     [os.path.join(ROOT, "bridge", "server.py")],
-    pathex=[ROOT],
+    pathex=[ROOT, os.path.join(ROOT, "bridge")],
     binaries=[],
     datas=[
         (os.path.join(ROOT, "web"), "web"),

@@ -7,6 +7,7 @@ over WebSocket. Serves the web UI from ../web.
 usage: python server.py [--host 192.168.1.121] [--port 8000] [--interval 50]
                         [--bind-ip <local IPv4 used to reach the DM7>] [--listen <IPv4 for the web UI>]
        python server.py --list-nics | --scan
+       python server.py --demo [--demo-pattern static]   (no console: simulated DM7s, see demo_console.py)
 
 Without --host the bridge scans the local subnet(s) for consoles answering on
 TCP 49280 (auto-discovery). One hit -> connect; several -> the web UI asks.
@@ -173,6 +174,7 @@ class DM7Bridge:
                  fixed_host: bool = False):
         self.host, self.rcp_port, self.interval_ms, self.bind_ip = host, rcp_port, interval_ms, bind_ip
         self.fixed_host = fixed_host          # --host given: no discovery, no switching
+        self.persist = True                   # remember the chosen host in config.json (off in --demo)
         self.reader: asyncio.StreamReader | None = None
         self.writer: asyncio.StreamWriter | None = None
         self.connected = False
@@ -212,7 +214,7 @@ class DM7Bridge:
         self.scanning = True
         await self.push_status()
         try:
-            self.devices = await scan_consoles(self.bind_ip)
+            self.devices = await self._discover()
         finally:
             self.scanning = False
         await self.push_status()
@@ -225,13 +227,22 @@ class DM7Bridge:
         self.offline_since = time.monotonic()
         self.attempts = 0
         self.offline_rescan_at = None
-        cfg = load_config()
-        cfg["host"] = host
-        save_config(cfg)
-        self.host_changed.set()           # wakes run(); a live session notices the change and drops
+        if self.persist:
+            cfg = load_config()
+            cfg["host"] = host
+            save_config(cfg)
+        self.host_changed.set()          # wakes run(); a live session notices the change and drops
         if self.writer:
             self.writer.close()
         await self.push_status()
+
+    async def _discover(self) -> list[dict]:
+        return await scan_consoles(self.bind_ip)
+
+    async def _open(self, host: str):
+        log.info("connecting to %s:%d%s", host, self.rcp_port, f" via {self.bind_ip}" if self.bind_ip else "")
+        kw = {"local_addr": (self.bind_ip, 0)} if self.bind_ip else {}
+        return await asyncio.wait_for(asyncio.open_connection(host, self.rcp_port, **kw), timeout=5)
 
     async def _auto_select(self):
         """No host yet: scan; connect if exactly one console answers."""
@@ -279,10 +290,7 @@ class DM7Bridge:
 
     async def _session(self):
         host = self.host
-        log.info("connecting to %s:%d%s", host, self.rcp_port, f" via {self.bind_ip}" if self.bind_ip else "")
-        kw = {"local_addr": (self.bind_ip, 0)} if self.bind_ip else {}
-        self.reader, self.writer = await asyncio.wait_for(
-            asyncio.open_connection(host, self.rcp_port, **kw), timeout=5)
+        self.reader, self.writer = await self._open(host)
         self.connected = True
         self.last_error = None
         self.offline_since = None
@@ -413,6 +421,56 @@ class DM7Bridge:
                     self.clients.pop(ws, None)
 
 
+class DemoBridge(DM7Bridge):
+    """--demo: the same bridge, talking to simulated consoles (bridge/demo_console.py) on 127.0.0.1."""
+
+    SCAN_DELAY_S = 1.2        # a real /24 scan takes about this long; keeps "検索中…" visible
+    CONNECT_TIMEOUT_S = 5     # same as the real connect timeout
+
+    def __init__(self, interval_ms: int, pattern: str):
+        from demo_console import DemoRig
+        self.rig = DemoRig(TABLE, SOURCES, pattern)
+        super().__init__(self.rig.consoles[0].ip, RCP_PORT, interval_ms)
+        self.persist = False
+
+    async def _discover(self) -> list[dict]:
+        await asyncio.sleep(self.SCAN_DELAY_S)
+        return [{"ip": c.ip, **{k: c.info[k] for k in ("productname", "devicename")}}
+                for c in self.rig.consoles if c.state == "online"]
+
+    async def _open(self, host: str):
+        c = self.rig.by_ip(host)
+        log.info("connecting to demo console %s (%s)", host, c.state if c else "unknown")
+        if c is None or c.state == "unreachable":
+            await asyncio.sleep(self.CONNECT_TIMEOUT_S)
+            raise asyncio.TimeoutError()
+        return await asyncio.open_connection("127.0.0.1", c.port)   # refused while the console is "off"
+
+    async def run(self):
+        await self.rig.start()     # on the server's loop (inside lifespan)
+        await super().run()
+
+    async def demo_action(self, msg: dict) -> dict:
+        from demo_console import PATTERNS
+        a = msg.get("action")
+        if a == "pattern":
+            if msg.get("value") in PATTERNS:
+                self.rig.world.pattern = msg["value"]
+        elif a == "console":
+            c = self.rig.by_ip(msg.get("ip"))
+            if c:
+                await c.set_state(msg.get("state"))
+        elif a == "label":
+            await self.rig.label_change()
+        elif a == "auto_labels":
+            self.rig.set_auto_labels(bool(msg.get("value")))
+        elif a == "scene":
+            await self.rig.scene_recall()
+        elif a == "unselect":             # back to "no target": the bridge scans and, with 2 consoles, the UI asks
+            await self.set_host(None)
+        return self.rig.state()
+
+
 def build_app(bridge: DM7Bridge) -> FastAPI:
     from contextlib import asynccontextmanager
 
@@ -451,6 +509,18 @@ def build_app(bridge: DM7Bridge) -> FastAPI:
     async def api_scan():
         return JSONResponse(await bridge.scan())
 
+    @app.get("/api/demo")
+    async def api_demo_state():
+        if not isinstance(bridge, DemoBridge):
+            return JSONResponse({"error": "not in demo mode (start with --demo)"}, status_code=404)
+        return JSONResponse(bridge.rig.state())
+
+    @app.post("/api/demo")
+    async def api_demo_action(msg: dict):
+        if not isinstance(bridge, DemoBridge):
+            return JSONResponse({"error": "not in demo mode (start with --demo)"}, status_code=404)
+        return JSONResponse(await bridge.demo_action(msg))
+
     @app.get("/table.json")
     async def table():
         return FileResponse(TABLE)
@@ -484,6 +554,10 @@ def main():
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT", 8000)))
     ap.add_argument("--interval", type=int, default=50, help="meter interval ms (40-1000)")
     ap.add_argument("--no-browser", action="store_true", help="do not open the web UI in the default browser")
+    ap.add_argument("--demo", action="store_true",
+                    help="no console needed: simulate two DM7s on 127.0.0.1 (control page: /demo.html). config.json is not touched")
+    ap.add_argument("--demo-pattern", default="music", choices=["music", "static", "sweep", "silent"],
+                    help="initial demo signal (static = fixed levels, for comparable screenshots)")
     args = ap.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if args.list_nics:
@@ -494,13 +568,21 @@ def main():
         for d in asyncio.run(scan_consoles(args.bind_ip)):
             print(f"{d['ip']:16s} {d.get('productname', '?'):8s} {d.get('devicename', '')}")
         return
-    host = args.host
-    fixed = bool(host)
-    if not host and not args.forget:
-        host = load_config().get("host")
-    bridge = DM7Bridge(host, args.rcp_port, args.interval, args.bind_ip, fixed_host=fixed)
-    url = f"http://{'127.0.0.1' if args.listen in ('0.0.0.0', '') else args.listen}:{args.port}/"
-    log.info("web UI on %s  (target: %s)", url, host or "auto-discover")
+    if args.demo:
+        sys.path.insert(0, str(HERE))      # demo_console.py sits next to this file (bundled as a module when frozen)
+        bridge = DemoBridge(args.interval, args.demo_pattern)
+        host = f"demo consoles {[c.ip for c in bridge.rig.consoles]}"
+    else:
+        host = args.host
+        fixed = bool(host)
+        if not host and not args.forget:
+            host = load_config().get("host")
+        bridge = DM7Bridge(host, args.rcp_port, args.interval, args.bind_ip, fixed_host=fixed)
+    base = f"http://{'127.0.0.1' if args.listen in ('0.0.0.0', '') else args.listen}:{args.port}/"
+    url = base + ("demo.html" if args.demo else "")
+    log.info("web UI on %s  (target: %s)", base, host or "auto-discover")
+    if args.demo:
+        log.info("demo control page: %sdemo.html", base)
     if not args.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     try:
