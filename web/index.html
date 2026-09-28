@@ -31,7 +31,7 @@ button.danger { background: #4a1c1c; border-color: #7a2a2a; }
    min-width 10vh fits 15 meters at 1280x768 with ~6-7 characters per name line; beyond that the row scrolls horizontally. */
 .slot { position: relative; display: flex; flex-direction: column; flex: 1 1 0; min-width: 10vh; max-width: 40vh; container-type: inline-size;
   background: var(--panel); border: 1px solid var(--line); border-radius: 1vh; overflow: hidden; }
-.slot .head { padding: 0.5vh 0.4vh 0.3vh; text-align: center; border-top: 0.8vh solid var(--stripe, #555); }
+.slot .head { padding: 0.5vh 0.4vh 1.2vh;   /* bottom: keeps the point chip clear of the OVER lamp at the top of the meter */ text-align: center; border-top: 0.8vh solid var(--stripe, #555); }
 /* Name: up to 2 lines, ellipsis after that. The block is always 2 lines tall so one- and two-line names keep every head the same height. */
 .slot .name { font-size: min(2.9vh, 34cqw); font-weight: 600; line-height: 1.15; height: 2.3em; display: flex; align-items: center; justify-content: center; }
 .slot .name > span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
