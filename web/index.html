@@ -259,11 +259,14 @@ const SRC_LABEL = { InCh:'IN', Mix:'MIX', Mtrx:'MTRX', St:'ST' };
 const PICK_COLOR = { PreHPF:'#4fc3f7', PreEQ:'#4fc3f7', PreFader:'#f2c230', PostOn:'#35d05a' };   // metering-point colour code
 const PICK_SHORT = { PreHPF:'PreH', PreEQ:'PreE', PreFader:'PreF', PostOn:'Post' };             // chip label on narrow slots (< 15vh)
 // Meter style: 'bar' (continuous) | 'step' (segments). Global setting (top bar, ?meter=) + optional per-slot override (slot.style).
-// Step segments sit on the bar scale (same positions as the bar): segment k spans (STEP_EDGES[k+1], STEP_EDGES[k]] dB and is
-// lit once the level exceeds its lower edge, i.e. as soon as the bar would enter it (no rounding). 1 dB from 0 down to -10
-// (the -10 segment spans -12..-10), coarse below on the Editor ticks. OVER only for raw 0xFF.
+// Step segments sit on the bar scale (same positions as the bar): every tick interval is split into 3, so all 33 segments are
+// the same height — 1 dB from 0 to -18, 2 dB from -18 to -30, 3.33 dB from -30 to -60. Segment k spans
+// (STEP_EDGES[k+1], STEP_EDGES[k]] dB and is lit once the level exceeds its lower edge, i.e. as soon as the bar would enter it
+// (no rounding). Scale labels stay on the bar ticks only. OVER only for raw 0xFF.
 const METER_STYLES = ['bar', 'step'];
-const STEP_EDGES = [0, -1, -2, -3, -4, -5, -6, -7, -8, -9, -10, -12, -15, -18, -24, -30, -40, -50, -60];
+const STEP_SPLIT = 3;
+const STEP_EDGES = [...TICKS.slice(0, -1).flatMap((hi, i) => {
+  const lo = TICKS[i + 1]; return Array.from({ length: STEP_SPLIT }, (_, j) => hi - (hi - lo) * j / STEP_SPLIT); }), TICKS[TICKS.length - 1]];
 let meterStyle = loadMeterStyle();
 function loadMeterStyle() {
   const q = new URLSearchParams(location.search).get('meter');
@@ -520,14 +523,9 @@ function scaleLayer(W, H, sx, sy, style) {     // rendered at the view's exact b
   const g = c.getContext('2d'); g.setTransform(sx, 0, 0, sy, 0, 0);
   const G = geom(W, H), fontPx = Math.max(9, Math.min(13, H * 0.05));
   g.font = `${fontPx}px system-ui`; g.textAlign = 'right'; g.textBaseline = 'middle';
-  if (style === 'step') {             // unlit segments + a label on every segment edge (same place as the bar ticks; thinned where they would overlap)
+  if (style === 'step') {             // unlit segments + the bar's tick labels (same numbers, same places)
     for (const s of stepGeom(W, H, sx, sy).segs) { g.fillStyle = SEG_OFF[s.tone]; g.fillRect(s.x, s.y, s.w, s.h); }
-    if (W > 40) {
-      g.fillStyle = '#8a93a0';
-      let lastY = -Infinity;
-      for (const e of STEP_EDGES) { const yy = G.y(dbToPos(e));
-        if (yy - lastY >= fontPx || e === -60) { g.fillText(e === 0 ? '0' : String(-e), G.padL - 4, yy); lastY = yy; } }
-    }
+    if (W > 40) { g.fillStyle = '#8a93a0'; for (const tk of TICKS) g.fillText(tk === 0 ? '0' : String(-tk), G.padL - 4, G.y(dbToPos(tk))); }
   } else {
     g.fillStyle = '#8a93a0'; g.strokeStyle = '#2a2f37';
     TICKS.forEach((tk, k) => { const yy = G.y(1 - k / (TICKS.length - 1));
