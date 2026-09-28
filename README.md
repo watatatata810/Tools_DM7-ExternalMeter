@@ -59,11 +59,13 @@ DM7 Editor と同時に使えます (DM7 側の設定変更は不要)。
 | `--forget` | 記憶した接続先を無視して再スキャン |
 | `--scan` | 見つかった DM7 を一覧して終了 |
 | `--list-nics` | この PC の IPv4 一覧 |
+| `--demo` | DM7 無しで動かす (疑似 DM7 2 台を内部で起動。[デモモード](#デモモード-dm7-無しでの開発確認)参照) |
+| `--demo-pattern static` | デモの初期信号 (`music` / `static` / `sweep` / `silent`) |
 
 ### URL パラメータ
 
 - `?slots=St:1:PostOn,InCh:17:PostOn:0,Mix:7:PreFader` : 表示するメーターを指定 (ソース:ch 番号:ポイント、4 つ目の `:0` でその ch の Peak Hold を OFF)。指定はブラウザに保存される
-- `?demo=1` : DM7 無しで合成信号を表示 (UI の確認用)
+- `?demo=1` : ページ内だけで合成信号を表示する簡易版 (ch 名・色なし、接続状態の再現なし)。通常は `--demo` を使う
 - `?fps=30` / `?dpr=1` : 低性能機 (ラズパイ等) 向けに描画レートと描画解像度を抑える
 
 ## 画面の操作
@@ -87,6 +89,21 @@ python3 bridge/server.py
 ```
 
 Python 3.9 以上。実行ファイルは `pip install pyinstaller && pyinstaller packaging/dm7meter.spec` で作れます (`dist/` に出力)。
+
+### デモモード (DM7 無しでの開発・確認)
+
+```
+python3 bridge/server.py --demo                  # 実行ファイル版は dm7-external-meter --demo
+```
+
+DM7 と同じ Remote Control Protocol を話す疑似卓 2 台 (`DEMO-FOH` 192.0.2.11 / `DEMO-MON` 192.0.2.12、実在しない文書用アドレス) をこの PC の中に立て、ブリッジはそれに普通に接続します。接続・再接続・スキャン・ch 名の追従はすべて本番と同じコードを通ります。`config.json` (記憶した接続先) は読み書きしません。
+
+ブラウザには操作ページ `http://127.0.0.1:8000/demo.html` が開きます。
+
+- **信号**: 演奏風 / 固定 (レベル固定。スクリーンショットの比較用。-3 / -9 / -15 / -18 … / 0 / OVER の段) / スイープ (全 ch が 12 秒で -60 dB → OVER) / 無音
+- **ch 名・色**: 実在風の名前と色が最初から入っている (長い名前・空の名前も含む)。「1 ch 変更」「5 秒ごと」で `NOTIFY set` 相当、「シーンリコール」で全 ch の名前が入れ替わる
+- **疑似 DM7**: 1 台ごとに 正常 / 電源 OFF (接続拒否) / 無応答 (ケーブル抜け相当。15 秒後に切断判定) を切替。「接続先を未選択に戻す」で起動直後の機器選択画面を再現
+- **プレビュー**: メーター画面を 1280×768 / 1920×480 / 1480×320 などの固定サイズで表示 (大きければ縮小表示。vh は指定サイズ基準のまま)。URL パラメータ (`?slots=...&fps=30` 等) も渡せる
 
 ## ラズパイでキオスク運用する場合
 
@@ -127,6 +144,6 @@ MIT License。第三者由来の部分は [THIRD_PARTY_NOTICES.md](THIRD_PARTY_N
 
 **What it does** — Connects to a Yamaha DM7 / DM7 Compact over the Remote Control Protocol (TCP 49280, works alongside DM7 Editor), subscribes to the meters you display (InCh 72 / Mix 48 / Mtrx 12 / St; PreHPF-PreEQ / PreFader / PostOn) and renders them in a touch-friendly web page: instant + peak readouts, per-channel peak hold, hold time, tap-to-reset, drag & drop layout editing, automatic console discovery on the local subnet, live label/colour updates, offline handling with automatic reconnect.
 
-**Run** — Download the binary for your OS from Releases and run it; the UI opens at `http://127.0.0.1:8000/`. Unsigned binaries: on Windows choose "More info → Run anyway"; on macOS run `chmod +x` and `xattr -d com.apple.quarantine` on the file (or right-click → Open). Options: `--host`, `--bind-ip`, `--listen`, `--port`, `--interval`, `--no-browser`, `--forget`, `--scan`, `--list-nics`. From source: `pip install -r bridge/requirements.txt && python3 bridge/server.py` (Python 3.9+).
+**Run** — Download the binary for your OS from Releases and run it; the UI opens at `http://127.0.0.1:8000/`. Unsigned binaries: on Windows choose "More info → Run anyway"; on macOS run `chmod +x` and `xattr -d com.apple.quarantine` on the file (or right-click → Open). Options: `--host`, `--bind-ip`, `--listen`, `--port`, `--interval`, `--no-browser`, `--forget`, `--scan`, `--list-nics`, `--demo` (two simulated consoles on 127.0.0.1 speaking RCP, control page at `/demo.html`: signal patterns, label changes, power-off / unreachable, fixed-size previews). From source: `pip install -r bridge/requirements.txt && python3 bridge/server.py` (Python 3.9+).
 
 **Notes** — Meter values are the console's own (same ballistics); the 8-bit `levelwt` → dB table comes from the Bitfocus Companion Yamaha RCP module and was verified with the DM7C oscillator at eight levels. The DM7 stops a meter stream 10 s after `mtrstart`, so the bridge re-arms every 5 s. Not affiliated with Yamaha.
